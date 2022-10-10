@@ -11,7 +11,7 @@ in short: "i will do my own settings, with blackjack and hookers".
 This could serve as a starting point for a more complex tool to tweak everything between OpenXR and aplication, like OpenVR Advanced Settings does for OpenVR.
 
 ideas that i desire to explore in the future:
- * filter inputs (remove shacky hands) under certains scenarios.
+ * filter inputs (remove shaky hands) under certains scenarios.
     - tiny input to the trigger finger would enable the filter.
     
  * OpenXR does have "full hand poses" support, could Virtual Desktop expose hand poses so i can inject it directly as an input?

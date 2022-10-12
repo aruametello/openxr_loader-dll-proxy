@@ -335,7 +335,11 @@ int log_init()
 
 int log_close()
 {
-    fclose(h_log);
+    if (h_log)
+    {
+        h_log=0;
+        fclose(h_log);
+    }
     return 1;
 }
 
@@ -392,7 +396,7 @@ int search_jump(const char *name,PFN_xrVoidFunction* ptr)
     /*
         1) do hash
         2) look at "hash" position in list if there is a value there
-        3) check if the "name" being looked for maths with the found entry
+        3) check if the "name" being looked for matches with the found entry
     */
     int p = simple_hash(name);
     char *n = &jump_table_names[p*jump_table_name_size];
@@ -549,7 +553,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst,DWORD reason,LPVOID)
         /*
             those are pointers to the real dll functions, from exports
 
-            the functinos with a preceding underline are the real dll functions.
+            the functions with a preceding underline are the real dll functions.
 
             the ones without are the proxied functions (ours)
         */
@@ -1293,7 +1297,7 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
     {
 
 
-        //is this an offset of the left hand?
+        //is this the position data of the left hand?
         for (int c=0;c<action_space_list_hand_left_cnt;c++)
         {
             if (space==action_space_list_hand_left[c])
@@ -1306,14 +1310,13 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
                 hand.v[Y_AXIS] = location->pose.orientation.y;
                 hand.v[X_AXIS] = location->pose.orientation.x;
                 hand.w = location->pose.orientation.w;
-                Quaternion_normalize(&hand,&hand);
 
                 Quaternion rotation;
                 float rotation_zyx[3];
                 rotation_zyx[Z_AXIS] = offset_rotation_left_z;
                 rotation_zyx[Y_AXIS] = offset_rotation_left_y;
                 rotation_zyx[X_AXIS] = offset_rotation_left_x;
-                Quaternion_fromEulerZYX(rotation_zyx,&rotation);//create the "rotated" rotation
+                Quaternion_fromEulerZYX(rotation_zyx,&rotation);
                 Quaternion_multiply(&rotation,&hand,&hand);
 
 
@@ -1326,7 +1329,7 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
                 return ret;
             }
         }
-        //is this an offset of the right hand?
+        //is this the position data of the right hand?
         for (int c=0;c<action_space_list_hand_right_cnt;c++)
         {
             if (space==action_space_list_hand_right[c])
@@ -1339,14 +1342,13 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
                 hand.v[Y_AXIS] = location->pose.orientation.y;
                 hand.v[X_AXIS] = location->pose.orientation.x;
                 hand.w = location->pose.orientation.w;
-                Quaternion_normalize(&hand,&hand);
 
                 Quaternion rotation;
                 float rotation_zyx[3];
                 rotation_zyx[Z_AXIS] = offset_rotation_right_z;
                 rotation_zyx[Y_AXIS] = offset_rotation_right_y;
                 rotation_zyx[X_AXIS] = offset_rotation_right_x;
-                Quaternion_fromEulerZYX(rotation_zyx,&rotation);//create the "rotated" rotation
+                Quaternion_fromEulerZYX(rotation_zyx,&rotation);
                 Quaternion_multiply(&rotation,&hand,&hand);
 
 

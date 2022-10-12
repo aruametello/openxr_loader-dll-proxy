@@ -87,17 +87,15 @@ FILE *h_log=0;
 char root_folder[256];//workdir, OG dll and config file location.
 
 /*
-    some default values, what i use in bonelab atm.
+    some default values for the offsets
 
-    those values are in radians, the config file has
-    them as degress.
 */
-double offset_rotation_left_x=-0.11;
-double offset_rotation_left_y=0.085;
+double offset_rotation_left_x=0.0;
+double offset_rotation_left_y=0.0;
 double offset_rotation_left_z=0.0;
 
-double offset_rotation_right_x=-0.11;
-double offset_rotation_right_y=-0.085;
+double offset_rotation_right_x=0.0;
+double offset_rotation_right_y=0.0;
 double offset_rotation_right_z=0.0;
 
 

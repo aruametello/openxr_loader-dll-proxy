@@ -1,0 +1,25 @@
+#
+# configuration file for controller offsets in OpenXR
+#
+# The rotation values are written in degress,
+# use . as a decimal point
+#
+# x = "up/down" angle
+# y = "left/right" angle
+# z = "twist" angle.
+#
+# Everything after a # character is ignored, so you can
+# write comments as needed
+#
+
+
+#left hand
+left_hand_rotation_offset_x=1.0
+left_hand_rotation_offset_y=9.0
+left_hand_rotation_offset_z=0.0
+
+#right hand
+right_hand_rotation_offset_x=1.0
+right_hand_rotation_offset_y=-9.0
+right_hand_rotation_offset_z=0.0
+

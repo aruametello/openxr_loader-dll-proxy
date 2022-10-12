@@ -2,6 +2,8 @@
 
 A proxy dll to Kronos openxr_loader.dll.
 
+video description and demonstration: https://www.youtube.com/watch?v=WixaeDdFIWg
+
 it exposes bilateral comunications between the XR aplication and the OpenXR api, allowing the user to change inputs and outputs to OpenXR.
 
 the target here is to implement a setting (per game) of controller rotation offsets. i personally think every vr game should have this as an option the same way desktop mouse driven first person shooters have mouse sensitivity settings.

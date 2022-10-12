@@ -26,6 +26,7 @@
     #define M_PI (3.14159265358979323846)
 #endif
 
+
 void Quaternion_set(float w, float v1, float v2, float v3, Quaternion* output)
 {
     assert(output != NULL);
@@ -54,6 +55,7 @@ bool Quaternion_equal(Quaternion* q1, Quaternion* q2)
     bool equalV2 = fabs(q1->v[2] - q2->v[2]) <= QUATERNION_EPS;
     return equalW && equalV0 && equalV1 && equalV2;
 }
+
 
 void Quaternion_fprint(FILE* file, Quaternion* q)
 {
@@ -237,6 +239,8 @@ void Quaternion_rotate(Quaternion* q, float v[3], float output[3])
     output[1] = result[1];
     output[2] = result[2];
 }
+
+
 
 void Quaternion_slerp(Quaternion* q1, Quaternion* q2, float t, Quaternion* output)
 {

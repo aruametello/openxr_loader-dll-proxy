@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <math.h>
 
+typedef double qfloat;
+
 /**
  * Maximum floating point difference that is considered as equal.
  */
@@ -154,3 +156,10 @@ void Quaternion_rotate(Quaternion* q, float v[3], float output[3]);
  *      0 is equal with q1, 1 is equal with q2, 0.5 is the middle between q1 and q2.
  */
 void Quaternion_slerp(Quaternion* q1, Quaternion* q2, float t, Quaternion* output);
+
+
+enum {
+    Z_AXIS,
+    Y_AXIS,
+    X_AXIS
+};

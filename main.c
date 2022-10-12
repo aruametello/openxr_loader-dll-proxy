@@ -14,7 +14,7 @@
     OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
-    discord: osso#6389
+    its easier to find me at discord: osso#6389
 
 
     OpenXR proxy dll - adds controler rotation offsets.
@@ -39,7 +39,7 @@
 
     you can find wrappit here: https://www.codeproject.com/Articles/16541/Create-your-Proxy-DLLs-automatically
 
-    but some gormless motherfucker at microsoft decided that "inline assembly" is bad and those functions
+    but the "fine" folks at microsoft decided that "inline assembly" is bad and those functions
     are not supported anymore with their C/CPP compiler when targeting x86_64 or ARM code, so i went for the
     retarded route and wrote all calls by hand, since this dll has just a few (about 55 of them)
 
@@ -52,6 +52,8 @@
 
 
 
+#define _WIN32_WINNT 0x0A00
+
 #include <windows.h>
 #include <stdio.h>
 #include <openxr\openxr.h>
@@ -61,6 +63,13 @@
 //uses https://github.com/MartinWeigel/Quaternion for quaternions because i suck at math
 #include "Quaternion.h"
 
+#ifndef M_PI
+    #define M_PI (3.14159265358979323846)
+#endif
+
+
+#define degToRad(angleInDegrees) ((angleInDegrees) * M_PI / 180.0)
+#define radToDeg(angleInRadians) ((angleInRadians) * 180.0 / M_PI)
 
 #pragma pack(1)
 
@@ -73,8 +82,23 @@ HINSTANCE hL = 0;
 #define jump_table_name_size 64
 void ** jump_table;
 char *jump_table_names;
-FILE *h_log;
+FILE *h_log=0;
 
+char root_folder[256];//workdir, OG dll and config file location.
+
+/*
+    some default values, what i use in bonelab atm.
+
+    those values are in radians, the config file has
+    them as degress.
+*/
+double offset_rotation_left_x=-0.11;
+double offset_rotation_left_y=0.085;
+double offset_rotation_left_z=0.0;
+
+double offset_rotation_right_x=-0.11;
+double offset_rotation_right_y=-0.085;
+double offset_rotation_right_z=0.0;
 
 
 //those are not constant, and will be corrected by xrStringToPath as needed.
@@ -111,9 +135,167 @@ uint64_t action_space_list_hand_right[64];
 */
 
 
+/*
+    Read the configuration file
+*/
+void str_lowercase(char *str)
+{
+    for(int i = 0; str[i]; i++)
+      str[i] = tolower(str[i]);
+}
+int read_config(char *config_path)
+{
+    double double_temp;
+    char line[512];
+    char cmd[512];
+
+
+    FILE *arq = fopen(config_path,"r");
+
+    if (arq)
+    {
+        while (!feof(arq))
+        {
+            fscanf(arq,"%[^\n]\n",line);//ler uma linha
+            str_lowercase(line);
+            if (sscanf(line,"%[^#]",line))//cortar comentarios
+            {
+                //conferir qual tipo de informacao temos aqui
+                sscanf(line,"%[^=]",cmd);
+
+                if (strcmp(cmd,"right_hand_rotation_offset_x")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_rotation_right_x = degToRad(double_temp);
+                }else
+                if (strcmp(cmd,"right_hand_rotation_offset_y")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_rotation_right_y = degToRad(double_temp);
+                }else
+                if (strcmp(cmd,"right_hand_rotation_offset_z")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_rotation_right_z = degToRad(double_temp);
+                }else
+                if (strcmp(cmd,"left_hand_rotation_offset_x")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_rotation_left_x = degToRad(double_temp);
+                }else
+                if (strcmp(cmd,"left_hand_rotation_offset_y")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_rotation_left_y = degToRad(double_temp);
+                }else
+                if (strcmp(cmd,"left_hand_rotation_offset_z")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_rotation_left_z = degToRad(double_temp);
+                } else {
+                    char err[256];
+                    sprintf(err,"Invalid line in openxr_loader_config.txt:\n%s\nThe application will be closed.",line);
+                    MessageBox(0,err,"openvr_loader.dll proxy",MB_ICONERROR);
+                    exit(0);
+                }
+            }
+        }
+    } else {
+        char err[512];
+        sprintf(err,"Could not find:\n%s!\n\nRead the instructions for further information.\nThe application will be closed.",config_path);
+        MessageBoxA(0,err,"openvr_loader.dll proxy",MB_ICONERROR);
+        exit(0);
+    }
+
+    fclose(arq);
+}
+
+
+
+/*
+    trying to find where we are (where is openxr_loader.dll?)
+
+    it will often not match the "current folder" of the process.
+
+    in unity it is game_folder\game_data\plugins\x86_x64
+
+    the plan is to look in the loaded module list, and pick
+    the folder we are to use as a root folder.
+    (search path for configuration and OG dll)
+
+*/
+int find_module_folder(char *search,char *output)
+{
+    HMODULE hMods[1024];
+    HANDLE hProcess;
+    DWORD cbNeeded;
+    unsigned int i;
+    DWORD processID = GetCurrentProcessId();
+
+    // Print the process identifier.
+
+    int ret_value = 0;
+    //printf( "\nProcess ID: %u\n", processID );
+
+    // Get a handle to the process.
+
+    hProcess = OpenProcess( PROCESS_QUERY_INFORMATION |
+                            PROCESS_VM_READ,
+                            FALSE, processID );
+    if (NULL == hProcess)
+        return 1;
+
+   // Get a list of all the modules in this process.
+
+    if( EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded))
+    {
+        for ( i = 0; i < (cbNeeded / sizeof(HMODULE)); i++ )
+        {
+            TCHAR szModName[MAX_PATH];
+
+            // Get the full path to the module's file.
+
+            if ( GetModuleFileNameExA( hProcess, hMods[i], szModName,
+                                      sizeof(szModName) / sizeof(TCHAR)))
+            {
+                // Print the module name and handle value.
+                //printf( TEXT("\t%s (0x%08X)\n"), szModName, hMods[i] );
+
+                //compare everything in lowercase
+                str_lowercase(szModName);
+                //find the last slash
+                int s=-1;
+                for (int c=0;szModName[c]!=0;c++)
+                    if (szModName[c]=='\\') s = c;
+                if (s>0)
+                {
+                    //the name of the file is the one we are looking for?
+                    if (strcmp(&szModName[s+1],search)==0)
+                    {
+                        //return the folder it is
+                        strncpy(output,szModName,s+1);
+                        output[s+1]=0;
+                        ret_value = 1;
+                    }
+                }
+
+
+            }
+        }
+    }
+
+    // Release the handle to the process.
+
+    CloseHandle( hProcess );
+
+    return ret_value;
+}
+
+
 int log_message(const char *fmt, ...)
 {
-
+    //log file is not opened?
+    if (!h_log) return;
 
     char buffer[8192];
     va_list args;
@@ -304,17 +486,53 @@ BOOL WINAPI DllMain(HINSTANCE hInst,DWORD reason,LPVOID)
     {
 		hLThis = hInst;
 
-        //memoria da jumptable
+        //start a logfile (before any attempt of log_message!)
+		log_init();
+
+
+		//try to find myself (openxr_loader.dll) within the loaded modules
+		//of the current process, we need that to know what folder to look
+		//for other stuff. (config file and OG dll)
+        if (!find_module_folder("openxr_loader.dll",root_folder))
+        {
+            root_folder[0]=0;//not found? trying with the current directory anyway.
+            log_message("could not find my own dll!");
+        } else {
+            log_message("found my own dll at %s",root_folder);
+        }
+
+        char config_file_path[256];
+        char ogdll_file_path[256];
+        sprintf(config_file_path,"%sopenxr_loader_config.txt",root_folder);
+        sprintf(ogdll_file_path,"%soriginal_openxr_loader.dll",root_folder);
+
+        read_config(config_file_path);
+
+        log_message("read configuration file from: %s\n",config_file_path);
+
+
+        log_message("Using the following rotation offsets:");
+        log_message("left: %fx%fx%f",
+                    radToDeg(offset_rotation_left_x),
+                    radToDeg(offset_rotation_left_y),
+                    radToDeg(offset_rotation_left_z));
+        log_message("right: %fx%fx%f",
+                    radToDeg(offset_rotation_right_x),
+                    radToDeg(offset_rotation_right_y),
+                    radToDeg(offset_rotation_right_z));
+        log_message("");
+
+        //jumptable memory
         jump_table = (PFN_xrVoidFunction) malloc(jump_table_size * sizeof(PFN_xrVoidFunction));
         jump_table_names = (char *) malloc(sizeof(char) * jump_table_name_size * jump_table_size);
 
-        //start a logfile
-		log_init();
 
-		hL = LoadLibrary("original_openxr_loader.dll");
+		hL = LoadLibrary(ogdll_file_path);
 		if (!hL) {
-            MessageBoxA(0,"Could not find original_openxr_loader.dll!\nread the instructions for further information.","OpenXR controler offset mod",0);
-            return 0;
+            char err[512];
+            sprintf(err,"Could not find:\n%s!\n\nread the instructions for further information.\n\n(do not overwrite the original file! rename it!)",ogdll_file_path);
+            MessageBoxA(0,err,"OpenXR controler offset mod",MB_ICONERROR);
+            exit(0);
 		} else {
             log_message("hook sucessful to original_openxr_loader.dll");
 		}
@@ -561,22 +779,22 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProcAddr(
 }
 
 
-XRAPI_PTR xrCreateHandTrackerEXT (XrSession session, const XrHandTrackerCreateInfoEXT* createInfo, XrHandTrackerEXT* handTracker)
+void XRAPI_PTR xrCreateHandTrackerEXT (XrSession session, const XrHandTrackerCreateInfoEXT* createInfo, XrHandTrackerEXT* handTracker)
 {
     log_message("xrCreateHandTrackerEXT");
-    return _xrCreateHandTrackerEXT(session,createInfo,handTracker);
+    _xrCreateHandTrackerEXT(session,createInfo,handTracker);
 }
 
-XRAPI_PTR xrDestroyHandTrackerEXT(XrHandTrackerEXT handTracker)
+void XRAPI_PTR xrDestroyHandTrackerEXT(XrHandTrackerEXT handTracker)
 {
     log_message("xrDestroyHandTrackerEXT");
-    return _xrDestroyHandTrackerEXT(handTracker);
+    _xrDestroyHandTrackerEXT(handTracker);
 }
 
-XRAPI_PTR xrLocateHandJointsEXT(XrHandTrackerEXT handTracker, const XrHandJointsLocateInfoEXT* locateInfo, XrHandJointLocationsEXT* locations)
+void XRAPI_PTR xrLocateHandJointsEXT(XrHandTrackerEXT handTracker, const XrHandJointsLocateInfoEXT* locateInfo, XrHandJointLocationsEXT* locations)
 {
     log_message("xrLocateHandJointsEXT");
-    return _xrLocateHandJointsEXT(handTracker,locateInfo,locations);
+    _xrLocateHandJointsEXT(handTracker,locateInfo,locations);
 }
 
 
@@ -1074,59 +1292,37 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
     if (location->type==XR_TYPE_SPACE_LOCATION)
     {
 
-        /*
-        log_message("xrLocateSpace space:%lu basespace:%lu type: %u",
-                    space,
-                    baseSpace,
-                    location->type);
-        */
-
-        /*
-        log_message("orientation: %f\t%f\t%f\t%f Pos: %f\t%f\t%f",
-                    location->pose.orientation.x,
-                    location->pose.orientation.y,
-                    location->pose.orientation.z,
-                    location->pose.orientation.w,
-                    location->pose.position.x,
-                    location->pose.position.y,
-                    location->pose.position.z);
-        */
-
-
 
         //is this an offset of the left hand?
         for (int c=0;c<action_space_list_hand_left_cnt;c++)
         {
             if (space==action_space_list_hand_left[c])
             {
-                log_message("left hand pre:\t %f\t%f\t%f\t%f",
-                    location->pose.orientation.x,
-                    location->pose.orientation.y,
-                    location->pose.orientation.z,
-                    location->pose.orientation.w);
 
-                Quaternion q_rotatex;
-                Quaternion q_rotatey;
-                Quaternion q_rotatez;
+                Quaternion hand;
 
-                //apply offsets
-                //this is suposed to be 1 matrix rotation, but i really dont understand quaternions to
-                //do this properly.
-                Quaternion_fromXRotation(-0.100,&q_rotatex);
-                Quaternion_fromYRotation( 0.090,&q_rotatey);
-                Quaternion_multiply(&q_rotatex, &location->pose.orientation, &location->pose.orientation);
-                Quaternion_multiply(&q_rotatey, &location->pose.orientation, &location->pose.orientation);
+                /* Library uses zyxw, openXR uses xyzw */
+                hand.v[Z_AXIS] = location->pose.orientation.z;
+                hand.v[Y_AXIS] = location->pose.orientation.y;
+                hand.v[X_AXIS] = location->pose.orientation.x;
+                hand.w = location->pose.orientation.w;
+                Quaternion_normalize(&hand,&hand);
 
-                log_message("left post:\t %f\t%f\t%f\t%f",
-                    location->pose.orientation.x,
-                    location->pose.orientation.y,
-                    location->pose.orientation.z,
-                    location->pose.orientation.w);
+                Quaternion rotation;
+                float rotation_zyx[3];
+                rotation_zyx[Z_AXIS] = offset_rotation_left_z;
+                rotation_zyx[Y_AXIS] = offset_rotation_left_y;
+                rotation_zyx[X_AXIS] = offset_rotation_left_x;
+                Quaternion_fromEulerZYX(rotation_zyx,&rotation);//create the "rotated" rotation
+                Quaternion_multiply(&rotation,&hand,&hand);
 
-                //Quaternion_fromZRotation(-0.085,&location.pose.orientation);
-                //location->pose.orientation.x += -0.11;//pitch?
-                //location->pose.orientation.y += 0.088;//yaw positive=outwards for left
-                //location->pose.orientation.z += 0.00;//roll
+
+                location->pose.orientation.z = hand.v[Z_AXIS];
+                location->pose.orientation.y = hand.v[Y_AXIS];
+                location->pose.orientation.x = hand.v[X_AXIS];
+                location->pose.orientation.w = hand.w;
+
+
                 return ret;
             }
         }
@@ -1135,34 +1331,31 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
         {
             if (space==action_space_list_hand_right[c])
             {
-                log_message("right hand pre:\t%f\t%f\t%f\t%f",
-                    location->pose.orientation.x,
-                    location->pose.orientation.y,
-                    location->pose.orientation.z,
-                    location->pose.orientation.w);
 
-                Quaternion q_rotatex;
-                Quaternion q_rotatey;
-                Quaternion q_rotatez;
+                Quaternion hand;
 
-                //apply offsets
-                //this is suposed to be 1 matrix rotation, but i really dont understand quaternions to
-                //do this properly.
-                Quaternion_fromXRotation(-0.100,&q_rotatex);
-                Quaternion_fromYRotation(-0.090,&q_rotatey);
-                Quaternion_multiply(&q_rotatex, &location->pose.orientation, &location->pose.orientation);
-                Quaternion_multiply(&q_rotatey, &location->pose.orientation, &location->pose.orientation);
+                /* Library uses zyxw, openXR uses xyzw */
+                hand.v[Z_AXIS] = location->pose.orientation.z;
+                hand.v[Y_AXIS] = location->pose.orientation.y;
+                hand.v[X_AXIS] = location->pose.orientation.x;
+                hand.w = location->pose.orientation.w;
+                Quaternion_normalize(&hand,&hand);
+
+                Quaternion rotation;
+                float rotation_zyx[3];
+                rotation_zyx[Z_AXIS] = offset_rotation_right_z;
+                rotation_zyx[Y_AXIS] = offset_rotation_right_y;
+                rotation_zyx[X_AXIS] = offset_rotation_right_x;
+                Quaternion_fromEulerZYX(rotation_zyx,&rotation);//create the "rotated" rotation
+                Quaternion_multiply(&rotation,&hand,&hand);
 
 
-                log_message("right hand post:\t%f\t%f\t%f\t%f",
-                    location->pose.orientation.x,
-                    location->pose.orientation.y,
-                    location->pose.orientation.z,
-                    location->pose.orientation.w);
+                location->pose.orientation.z = hand.v[Z_AXIS];
+                location->pose.orientation.y = hand.v[Y_AXIS];
+                location->pose.orientation.x = hand.v[X_AXIS];
+                location->pose.orientation.w = hand.w;
 
-                //location->pose.orientation.x += -0.11;//pitch
-                //location->pose.orientation.y += -0.088;//yaw negative=outwards for right
-                //location->pose.orientation.z += 0.00;//roll
+
                 return ret;
             }
             //same
@@ -1325,8 +1518,8 @@ XRAPI_ATTR XrResult XRAPI_CALL xrWaitSwapchainImage(
 
 
 
-//===============================================
 /*
+    =====================================================
     everything beyond this point is testing for some
     basic sanities because its been a while i havent
     programmed something with confusing pointers.
@@ -1339,7 +1532,7 @@ XRAPI_ATTR XrResult XRAPI_CALL xrWaitSwapchainImage(
     test code is partially borrowed from here:
     https://gitlab.freedesktop.org/monado/demos/openxr-simple-example/-/blob/master/main.c
 
-    but enough to see if openXR gets pasts the first few calls.
+    just enough to see if openXR gets pasts the first few calls.
 */
 
 int xr_check(XrInstance instance, XrResult result, const char* format, ...)
@@ -1366,7 +1559,8 @@ int xr_check(XrInstance instance, XrResult result, const char* format, ...)
 static void
 print_viewconfig_view_info(uint32_t view_count, XrViewConfigurationView* viewconfig_views)
 {
-	for (uint32_t i = 0; i < view_count; i++) {
+	for (uint32_t i = 0; i < view_count; i++)
+    {
 		printf("View Configuration View %d:\n", i);
 		printf("\tResolution       : Recommended %dx%d, Max: %dx%d\n",
 		       viewconfig_views[0].recommendedImageRectWidth,
@@ -1379,8 +1573,74 @@ print_viewconfig_view_info(uint32_t view_count, XrViewConfigurationView* viewcon
 }
 
 
+/*
+    OpenXR internally has its quaternions in 32bit precision
+
+    to avoid losing precision during calculations, we internally
+    mess with them at 64bit precision, then downgrade back to 32bit.
+*/
+void quaternion_double_to_float(double input[4],double output[4])
+{
+    output[0] = input[0];
+    output[1] = input[1];
+    output[2] = input[2];
+    output[3] = input[3];
+}
+void quaternion_float_to_double(float input[4],double output[4])
+{
+    output[0] = input[0];
+    output[1] = input[1];
+    output[2] = input[2];
+    output[3] = input[3];
+}
+
+
+
+
+
+void print_euler(float e[3])
+{
+    printf("%8.3f x %8.3f x %8.3f",
+           radToDeg(e[0]),
+           radToDeg(e[1]),
+           radToDeg(e[2]));
+}
+
+void print_quaternion(Quaternion q)
+{
+    float euler_zyx[3];
+    Quaternion_toEulerZYX(&q,euler_zyx);
+    printf("%8.3f x %8.3f x %8.3f",
+           radToDeg(euler_zyx[0]),
+           radToDeg(euler_zyx[1]),
+           radToDeg(euler_zyx[2]));
+}
+
+void sprint_quaternion(char *s,Quaternion q)
+{
+    float euler_zyx[3];
+    Quaternion_toEulerZYX(&q,euler_zyx);
+    sprintf(s,"%8.3f x %8.3f x %8.3f",
+           radToDeg(euler_zyx[0]),
+           radToDeg(euler_zyx[1]),
+           radToDeg(euler_zyx[2]));
+}
+
+
 int main()
 {
+
+
+
+    /*
+    char root_folder[256];
+    find_module_folder("original_openxr_loader.dll",root_folder);
+
+    printf("Found in: %s\n",root_folder);
+    exit(0);
+    */
+
+
     printf("debug\n");
     DllMain(0,DLL_PROCESS_ATTACH,0);
 
@@ -1532,36 +1792,7 @@ int main()
 
 
 
-    location.pose.orientation.x = 0.746777;
-    location.pose.orientation.y = 0.222268;
-    location.pose.orientation.z	= -0.117314;
-    location.pose.orientation.w = 0.615759;
-
-
-    printf("in:  %f %f %f %f\n",
-           location.pose.orientation.x,
-           location.pose.orientation.y,
-           location.pose.orientation.z,
-           location.pose.orientation.w);
-
-    Quaternion q_rotatex;
-    Quaternion q_rotatey;
-    Quaternion q_rotatez;
-
-
-    Quaternion_fromXRotation(-0.11,&q_rotatex);
-    Quaternion_fromYRotation(-0.085,&q_rotatey);
-    Quaternion_multiply(&q_rotatex, &location.pose.orientation, &location.pose.orientation);
-    Quaternion_multiply(&q_rotatey, &location.pose.orientation, &location.pose.orientation);
-
-    //Quaternion_fromYRotation(-0.085,&location.pose.orientation);
-
-
-    printf("out:  %f %f %f %f\n",
-           location.pose.orientation.x,
-           location.pose.orientation.y,
-           location.pose.orientation.z,
-           location.pose.orientation.w);
+    printf("--------------\n");
 
     return 0;
 }

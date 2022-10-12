@@ -1,4 +1,4 @@
-# openxr_loader-dll-proxy
+# openxr_loader.dll proxy
 
 A proxy dll to Kronos openxr_loader.dll.
 

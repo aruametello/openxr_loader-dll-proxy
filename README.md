@@ -1,6 +1,6 @@
 # openxr_loader.dll proxy
 
-A proxy dll to Khronos openxr_loader.dll.
+A proxy dll to Khronos openxr_loader.dll. (https://registry.khronos.org/OpenXR/specs/1.0/loader.html)
 
 video description and demonstration: https://www.youtube.com/watch?v=WixaeDdFIWg
 

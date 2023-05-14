@@ -60,6 +60,8 @@
 #include <time.h>
 #include <math.h>
 
+#include "main.h"
+
 //uses https://github.com/MartinWeigel/Quaternion for quaternions because i suck at math
 #include "Quaternion.h"
 
@@ -85,6 +87,8 @@ char *jump_table_names;
 FILE *h_log=0;
 
 char root_folder[256];//workdir, OG dll and config file location.
+char config_file_path[256];//fullpath of the config file
+
 
 /*
     some default values for the offsets
@@ -126,12 +130,49 @@ uint64_t action_space_list_hand_left[64];
 int action_space_list_hand_right_cnt=0;
 uint64_t action_space_list_hand_right[64];
 
+int ref_action_space_list_hand_left_cnt=0;
+uint64_t ref_action_space_list_hand_left[64];
+int ref_action_space_list_hand_right_cnt=0;
+uint64_t ref_action_space_list_hand_right[64];
+
+
+
+
+
+
 /*
     but beware!
     the idea above is dumb and will apply offsets to anything that
     has the subspace /user/hand/left or /user/hand/right
 */
 
+
+
+
+
+int log_message(const char *fmt, ...)
+{
+    //log file is not opened?
+    if (!h_log) return;
+
+    char buffer[8192];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    #ifdef DEBUG
+        printf("%s\n",buffer);
+        return 1;
+    #endif // debug
+
+
+    fprintf(h_log,"%s\n",buffer);
+    fflush(h_log);
+
+
+    return 1;
+}
 
 /*
     Read the configuration file
@@ -141,14 +182,14 @@ void str_lowercase(char *str)
     for(int i = 0; str[i]; i++)
       str[i] = tolower(str[i]);
 }
-int read_config(char *config_path)
+int read_config(char *config_file)
 {
     double double_temp;
     char line[512];
     char cmd[512];
 
 
-    FILE *arq = fopen(config_path,"r");
+    FILE *arq = fopen(config_file,"r");
 
     if (arq)
     {
@@ -191,21 +232,46 @@ int read_config(char *config_path)
                     sscanf(line,"%*[^=]=%lf",&double_temp);
                     offset_rotation_left_z = degToRad(double_temp);
                 } else {
-                    char err[256];
-                    sprintf(err,"Invalid line in openxr_loader_config.txt:\n%s\nThe application will be closed.",line);
-                    MessageBox(0,err,"openvr_loader.dll proxy",MB_ICONERROR);
-                    exit(0);
+                    //char err[256];
+                    fclose(arq);
+                    log_message("Invalid line found in the config file:%s!\n Some settings might reset to defaults!\n",config_file);
+                    write_config(config_file);//write a new config file
+                    return 1;
+
+                    //MessageBox(0,err,"openvr_loader.dll proxy",MB_ICONERROR);
+                    //exit(0);
                 }
             }
         }
+        fclose(arq);
+
     } else {
-        char err[512];
-        sprintf(err,"Could not find:\n%s!\n\nRead the instructions for further information.\nThe application will be closed.",config_path);
-        MessageBoxA(0,err,"openvr_loader.dll proxy",MB_ICONERROR);
-        exit(0);
+        log_message("Could not find my config file at:%s!\n We are trying to run with default offsets now(all zeroes)\n",config_file);
+        write_config(config_file);//write a new config file
     }
 
-    fclose(arq);
+
+    return 1;
+}
+
+int write_config(char *config_file)
+{
+    FILE *arq = fopen(config_file,"w");
+    if (arq)
+    {
+        fprintf(arq,"#offsets here are written in degrees!\n");
+        fprintf(arq,"left_hand_rotation_offset_x=%f\n",radToDeg(offset_rotation_left_x));
+        fprintf(arq,"left_hand_rotation_offset_y=%f\n",radToDeg(offset_rotation_left_y));
+        fprintf(arq,"left_hand_rotation_offset_z=%f\n",radToDeg(offset_rotation_left_z));
+        fprintf(arq,"right_hand_rotation_offset_x=%f\n",radToDeg(offset_rotation_right_x));
+        fprintf(arq,"right_hand_rotation_offset_y=%f\n",radToDeg(offset_rotation_right_y));
+        fprintf(arq,"right_hand_rotation_offset_z=%f\n",radToDeg(offset_rotation_right_z));
+        fclose(arq);
+        //log_message("Wrote update config in %s\n",config_file);
+
+    } else {
+        log_message("Could not write to config file located in: %s\n",config_file);
+    }
 }
 
 
@@ -289,30 +355,6 @@ int find_module_folder(char *search,char *output)
     return ret_value;
 }
 
-
-int log_message(const char *fmt, ...)
-{
-    //log file is not opened?
-    if (!h_log) return;
-
-    char buffer[8192];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    va_end(args);
-
-    #ifdef DEBUG
-        printf("%s\n",buffer);
-        return 1;
-    #endif // debug
-
-
-    fprintf(h_log,"%s\n",buffer);
-    fflush(h_log);
-
-
-    return 1;
-}
 
 int log_init()
 {
@@ -503,10 +545,13 @@ BOOL WINAPI DllMain(HINSTANCE hInst,DWORD reason,LPVOID)
             log_message("found my own dll at %s",root_folder);
         }
 
-        char config_file_path[256];
         char ogdll_file_path[256];
         sprintf(config_file_path,"%sopenxr_loader_config.txt",root_folder);
         sprintf(ogdll_file_path,"%soriginal_openxr_loader.dll",root_folder);
+
+
+        //MessageBoxA(0,config_file_path,"OpenXR controler offset mod",MB_ICONERROR);
+
 
         read_config(config_file_path);
 
@@ -529,11 +574,13 @@ BOOL WINAPI DllMain(HINSTANCE hInst,DWORD reason,LPVOID)
         jump_table_names = (char *) malloc(sizeof(char) * jump_table_name_size * jump_table_size);
 
 
+
 		hL = LoadLibrary(ogdll_file_path);
 		if (!hL) {
             char err[512];
-            sprintf(err,"Could not find:\n%s!\n\nread the instructions for further information.\n\n(do not overwrite the original file! rename it!)",ogdll_file_path);
+            sprintf(err,"Could not find:\n%s\n\nread the instructions for further information.\n\n(do not overwrite the original file! rename it!)",ogdll_file_path);
             MessageBoxA(0,err,"OpenXR controler offset mod",MB_ICONERROR);
+            log_close();
             exit(0);
 		} else {
             log_message("hook sucessful to original_openxr_loader.dll");
@@ -693,11 +740,20 @@ BOOL WINAPI DllMain(HINSTANCE hInst,DWORD reason,LPVOID)
         assign_jump("xrWaitFrame",(PFN_xrVoidFunction) xrWaitFrame);
         assign_jump("xrWaitSwapchainImage",(PFN_xrVoidFunction) xrWaitSwapchainImage);
         */
+
+        //launch the gui thread
+
+        thread_gui_data *gui_stuff =  (thread_gui_data*) malloc(sizeof(thread_gui_data));
+        strcpy(gui_stuff->config_fp,config_file_path);
+
+        launch_gui_thread(gui_stuff);
+
     }
 
 	if (reason == DLL_PROCESS_DETACH)
     {
         log_message("--- DLL_PROCESS_DETACH, end of log ---");
+        kill_gui();
         log_close();
         free(jump_table);
         free(jump_table_names);
@@ -880,6 +936,29 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateAction(
         {
             log_message("Subpath: %u",createInfo->subactionPaths[c]);
         }
+
+        //bellow is a hack for cases where the game does not use the /user/hand/left|right
+        //"pathString" to describe a controller, but the "actionname" related to the controller
+        //the hack itself is horrible and more like a test to see what happens then.
+
+        //does this actionName contains "left-controller" in the name
+        //TODO: match only stuff saying left-controller-*-pose ?
+        if (strncmp(createInfo->actionName,"left-controller",15)==0)
+        {
+            log_message("NOTICE: kept %s as a reference for the left controller. (%u)",createInfo->actionName,*action);
+            ref_action_space_list_hand_left[ref_action_space_list_hand_left_cnt] = *action;
+            ref_action_space_list_hand_left_cnt++;
+        } else
+        if (strncmp(createInfo->actionName,"right-controller",16)==0)
+        {
+            log_message("NOTICE: kept %s as a reference for the right controller. (%lu)",createInfo->actionName,*action);
+            ref_action_space_list_hand_right[ref_action_space_list_hand_right_cnt] = *action;
+            ref_action_space_list_hand_right_cnt++;
+        }
+
+
+
+
     }
 
 
@@ -924,17 +1003,48 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateActionSpace(
                 createInfo->next,
                 *space);
 
+    //===================================
     //is the "thing" attached to the user left hand or right hand? put it in the list...
     if (createInfo->subactionPath==id_user_hand_left)
     {
+        log_message("NOTICE: assigned ActionSpace %u to the left controller by xrStringToPath match.",createInfo->action);
         action_space_list_hand_left[action_space_list_hand_left_cnt] = *space;
         action_space_list_hand_left_cnt++;
-    } else
+        return ret;
+    }
     if (createInfo->subactionPath==id_user_hand_right)
     {
+        log_message("NOTICE: assigned ActionSpace %u to the right controller by xrStringToPath match.",createInfo->action);
         action_space_list_hand_right[action_space_list_hand_right_cnt] = *space;
         action_space_list_hand_right_cnt++;
+        return ret;
     }
+
+    //====================================
+    //is this action related to something known "within" left|right-controller-* ?
+    for (int c=0;c<ref_action_space_list_hand_left_cnt;c++)
+    {
+        if (ref_action_space_list_hand_left[c]==createInfo->action)
+        {
+            log_message("NOTICE: assigned ActionSpace %u to the left controller by xrCreateAction match.");
+            action_space_list_hand_left[action_space_list_hand_left_cnt] = *space;
+            action_space_list_hand_left_cnt++;
+            return ret;
+        }
+    }
+    for (int c=0;c<ref_action_space_list_hand_right_cnt;c++)
+    {
+        if (ref_action_space_list_hand_right[c]==createInfo->action)
+        {
+            log_message("NOTICE: assigned ActionSpace %u to the right controller by xrCreateAction match.");
+            action_space_list_hand_right[action_space_list_hand_right_cnt] = *space;
+            action_space_list_hand_right_cnt++;
+            return ret;
+        }
+    }
+
+
+    log_message("NOTICE: ActionSpace %u is not assigned to any offset hacks.",createInfo->action);
 
 
     return ret;
@@ -946,6 +1056,11 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateInstance(
     const XrInstanceCreateInfo*                 createInfo,
     XrInstance*                                 instance)
 {
+    /*
+        Todo: aqui dentro o aplicativo tem uma string q diz
+              o seu nome, pode ser charmoso de mostrar na gui
+    */
+
     log_message("xrCreateInstance %d",rand()%1000);
     return _xrCreateInstance(createInfo,instance);
 }
@@ -1349,17 +1464,19 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
                 Quaternion_fromEulerZYX(rotation_zyx,&rotation);
                 Quaternion_multiply(&rotation,&hand,&hand);
 
-
                 location->pose.orientation.z = hand.v[Z_AXIS];
                 location->pose.orientation.y = hand.v[Y_AXIS];
                 location->pose.orientation.x = hand.v[X_AXIS];
                 location->pose.orientation.w = hand.w;
 
-
                 return ret;
             }
             //same
         }
+
+        //log_message("@xrLocateSpace for something else: %lu",space);
+
+
     }
 
     //all other cases
@@ -1627,10 +1744,17 @@ void sprint_quaternion(char *s,Quaternion q)
 }
 
 
+
 int main()
 {
 
 
+    launch_gui_thread();
+
+    while (1)
+    {
+        Sleep(5);
+    }
 
     /*
     char root_folder[256];

@@ -23,6 +23,14 @@ HANDLE HWND_LABEL_L_RX;
 HANDLE HWND_LABEL_L_RY;
 HANDLE HWND_LABEL_L_RZ;
 
+HANDLE HWND_LABEL_L_PX;
+HANDLE HWND_LABEL_L_PY;
+HANDLE HWND_LABEL_L_PZ;
+HANDLE HWND_LABEL_R_PX;
+HANDLE HWND_LABEL_R_PY;
+HANDLE HWND_LABEL_R_PZ;
+
+
 HANDLE HWND_LABEL_R_RX;
 HANDLE HWND_LABEL_R_RY;
 HANDLE HWND_LABEL_R_RZ;
@@ -41,6 +49,16 @@ enum {
     ID_LABEL_L_RX,
     ID_LABEL_L_RZ,
 
+
+
+    ID_LABEL_L_PX,
+    ID_LABEL_L_PY,
+    ID_LABEL_L_PZ,
+
+    ID_LABEL_R_PX,
+    ID_LABEL_R_PY,
+    ID_LABEL_R_PZ,
+
     ID_BTN_L_YP_10,
     ID_BTN_L_YP_01,
     ID_BTN_L_YN_10,
@@ -55,6 +73,37 @@ enum {
     ID_BTN_L_ZP_01,
     ID_BTN_L_ZN_10,
     ID_BTN_L_ZN_01,
+
+
+    ID_BTN_L_P_XP_10,
+    ID_BTN_L_P_XP_01,
+    ID_BTN_L_P_XN_10,
+    ID_BTN_L_P_XN_01,
+
+    ID_BTN_L_P_YP_10,
+    ID_BTN_L_P_YP_01,
+    ID_BTN_L_P_YN_10,
+    ID_BTN_L_P_YN_01,
+
+    ID_BTN_L_P_ZP_10,
+    ID_BTN_L_P_ZP_01,
+    ID_BTN_L_P_ZN_10,
+    ID_BTN_L_P_ZN_01,
+
+    ID_BTN_R_P_XP_10,
+    ID_BTN_R_P_XP_01,
+    ID_BTN_R_P_XN_10,
+    ID_BTN_R_P_XN_01,
+
+    ID_BTN_R_P_YP_10,
+    ID_BTN_R_P_YP_01,
+    ID_BTN_R_P_YN_10,
+    ID_BTN_R_P_YN_01,
+
+    ID_BTN_R_P_ZP_10,
+    ID_BTN_R_P_ZP_01,
+    ID_BTN_R_P_ZN_10,
+    ID_BTN_R_P_ZN_01,
 
     ID_LABEL_R_RY,
     ID_LABEL_R_RX,
@@ -155,6 +204,71 @@ LRESULT CALLBACK WindowProcedure_setup_job (HWND hwnd, UINT message, WPARAM wPar
                     break;
 
 
+
+                //posicao X+
+                case offset_dialog_constats + ID_BTN_L_P_XP_10:
+                    cmd_set_l_px(offset_position_left_x+0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_L_P_XP_01:
+                    cmd_set_l_px(offset_position_left_x+0.01);
+                    return 1;
+                    break;
+
+                //posicao X-
+                case offset_dialog_constats + ID_BTN_L_P_XN_10:
+                    cmd_set_l_px(offset_position_left_x-0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_L_P_XN_01:
+                    cmd_set_l_px(offset_position_left_x-0.01);
+                    return 1;
+                    break;
+
+
+
+                //posicao Y+
+                case offset_dialog_constats + ID_BTN_L_P_YP_10:
+                    cmd_set_l_py(offset_position_left_y+0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_L_P_YP_01:
+                    cmd_set_l_py(offset_position_left_y+0.01);
+                    return 1;
+                    break;
+
+                //posicao Y-
+                case offset_dialog_constats + ID_BTN_L_P_YN_10:
+                    cmd_set_l_py(offset_position_left_y-0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_L_P_YN_01:
+                    cmd_set_l_py(offset_position_left_y-0.01);
+                    return 1;
+                    break;
+
+
+                //posicao Z+
+                case offset_dialog_constats + ID_BTN_L_P_ZP_10:
+                    cmd_set_l_pz(offset_position_left_z+0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_L_P_ZP_01:
+                    cmd_set_l_pz(offset_position_left_z+0.01);
+                    return 1;
+                    break;
+
+                //posicao Z-
+                case offset_dialog_constats + ID_BTN_L_P_ZN_10:
+                    cmd_set_l_pz(offset_position_left_z-0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_L_P_ZN_01:
+                    cmd_set_l_pz(offset_position_left_z-0.01);
+                    return 1;
+                    break;
+
+
                 //=========================
                 //RIGHT
                 //rotacao X+
@@ -216,6 +330,72 @@ LRESULT CALLBACK WindowProcedure_setup_job (HWND hwnd, UINT message, WPARAM wPar
                     cmd_set_r_rz(offset_rotation_right_z-degToRad(0.1));
                     return 1;
                     break;
+
+
+
+
+                //posicao X+
+                case offset_dialog_constats + ID_BTN_R_P_XP_10:
+                    cmd_set_r_px(offset_position_right_x+0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_R_P_XP_01:
+                    cmd_set_r_px(offset_position_right_x+0.01);
+                    return 1;
+                    break;
+
+                //posicao X-
+                case offset_dialog_constats + ID_BTN_R_P_XN_10:
+                    cmd_set_r_px(offset_position_right_x-0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_R_P_XN_01:
+                    cmd_set_r_px(offset_position_right_x-0.01);
+                    return 1;
+                    break;
+
+
+                //posicao Y+
+                case offset_dialog_constats + ID_BTN_R_P_YP_10:
+                    cmd_set_r_py(offset_position_right_y+0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_R_P_YP_01:
+                    cmd_set_r_py(offset_position_right_y+0.01);
+                    return 1;
+                    break;
+
+                //posicao Y-
+                case offset_dialog_constats + ID_BTN_R_P_YN_10:
+                    cmd_set_r_py(offset_position_right_y-0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_R_P_YN_01:
+                    cmd_set_r_py(offset_position_right_y-0.01);
+                    return 1;
+                    break;
+
+
+                //posicao Z+
+                case offset_dialog_constats + ID_BTN_R_P_ZP_10:
+                    cmd_set_r_pz(offset_position_right_z+0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_R_P_ZP_01:
+                    cmd_set_r_pz(offset_position_right_z+0.01);
+                    return 1;
+                    break;
+
+                //posicao Z-
+                case offset_dialog_constats + ID_BTN_R_P_ZN_10:
+                    cmd_set_r_pz(offset_position_right_z-0.1);
+                    return 1;
+                    break;
+                case offset_dialog_constats + ID_BTN_R_P_ZN_01:
+                    cmd_set_r_pz(offset_position_right_z-0.01);
+                    return 1;
+                    break;
+
 
                 default:;
             }
@@ -349,6 +529,44 @@ void cmd_set_l_rz(double val)
     write_config(config_file_path);
 }
 
+void cmd_set_l_px(double val)
+{
+
+    offset_position_left_x = val;
+
+    char st_btn[16];
+    sprintf(st_btn,"%1.2f",val);
+    SetWindowTextA(HWND_LABEL_L_PX,st_btn);
+
+    write_config(config_file_path);
+}
+
+void cmd_set_l_py(double val)
+{
+    offset_position_left_y = val;
+
+    char st_btn[16];
+    sprintf(st_btn,"%1.2f",val);
+    SetWindowTextA(HWND_LABEL_L_PY,st_btn);
+
+    write_config(config_file_path);
+}
+
+void cmd_set_l_pz(double val)
+{
+    offset_position_left_z = val;
+
+    char st_btn[16];
+    sprintf(st_btn,"%1.2f",val);
+    SetWindowTextA(HWND_LABEL_L_PZ,st_btn);
+
+    write_config(config_file_path);
+}
+
+
+
+
+
 
 void cmd_set_r_rx(double val)
 {
@@ -390,7 +608,40 @@ void cmd_set_r_rz(double val)
 }
 
 
+void cmd_set_r_px(double val)
+{
+    offset_position_right_x = val;
 
+    char st_btn[16];
+    sprintf(st_btn,"%1.2f",val);
+    SetWindowTextA(HWND_LABEL_R_PX,st_btn);
+
+    write_config(config_file_path);
+}
+
+void cmd_set_r_py(double val)
+{
+    offset_position_right_y = val;
+
+    char st_btn[16];
+    sprintf(st_btn,"%1.2f",val);
+    SetWindowTextA(HWND_LABEL_R_PY,st_btn);
+
+    write_config(config_file_path);
+}
+
+
+
+void cmd_set_r_pz(double val)
+{
+    offset_position_right_z = val;
+
+    char st_btn[16];
+    sprintf(st_btn,"%1.2f",val);
+    SetWindowTextA(HWND_LABEL_R_PZ,st_btn);
+
+    write_config(config_file_path);
+}
 
 
 
@@ -436,7 +687,7 @@ void create_gui()
            WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, /* default window */
            CW_USEDEFAULT,       /* Windows decides the position */
            CW_USEDEFAULT,       /* where the window ends up on the screen */
-           370,                 /* The programs width */
+           750,                 /* The programs width */
            420,                 /* and height in pixels */
            HWND_DESKTOP,        /* The window is a child-window to desktop */
            NULL,                /* No menu */
@@ -458,7 +709,7 @@ void create_gui()
 
     //================================================
     //menu superior
-    add_label(135,10,100,20,"left controller",0);
+    add_label(270+52,10,100,20,"left controller",0);
 
 
     yo=70;
@@ -503,9 +754,54 @@ void create_gui()
     add_button(xo+65,yo,50,50,"+0.1",ID_BTN_L_ZP_01);
     add_button(xo+65,yo+50,50,50,"-0.1",ID_BTN_L_ZN_01);
 
+    //#####################
+
+    yo=70;
+    xo=360;
+
+
+    add_label(xo+25,yo-30,45,20,"X pos:",0);
+    sprintf(stlabel,"%1.2f",offset_position_left_x);
+    HWND_LABEL_L_PX = add_label(xo+70,yo-30,40,20,stlabel,ID_LABEL_L_PX);
+
+    add_button(xo+10,yo,50,50,"+0.10",ID_BTN_L_P_XP_10);
+    add_button(xo+10,yo+50,50,50,"-0.10",ID_BTN_L_P_XN_10);
+
+    add_button(xo+65,yo,50,50,"+0.01",ID_BTN_L_P_XP_01);
+    add_button(xo+65,yo+50,50,50,"-0.01",ID_BTN_L_P_XN_01);
+
+
+    yo=70;
+    xo=480;
+
+    add_label(xo+25,yo-30,45,20,"Y pos:",0);
+    sprintf(stlabel,"%1.2f",offset_position_left_y);
+    HWND_LABEL_L_PY = add_label(xo+70,yo-30,40,20,stlabel,ID_LABEL_L_PY);
+
+    add_button(xo+10,yo,50,50,"+0.10",ID_BTN_L_P_YP_10);
+    add_button(xo+10,yo+50,50,50,"-0.10",ID_BTN_L_P_YN_10);
+
+    add_button(xo+65,yo,50,50,"+0.01",ID_BTN_L_P_YP_01);
+    add_button(xo+65,yo+50,50,50,"-0.01",ID_BTN_L_P_YN_01);
+
+
+    yo=70;
+    xo=600;
+
+    add_label(xo+25,yo-30,45,20,"Z pos:",0);
+    sprintf(stlabel,"%1.2f",offset_position_left_z);
+    HWND_LABEL_L_PZ = add_label(xo+70,yo-30,40,20,stlabel,ID_LABEL_L_PZ);
+
+    add_button(xo+10,yo,50,50,"+0.10",ID_BTN_L_P_ZP_10);
+    add_button(xo+10,yo+50,50,50,"-0.10",ID_BTN_L_P_ZN_10);
+
+    add_button(xo+65,yo,50,50,"+0.01",ID_BTN_L_P_ZP_01);
+    add_button(xo+65,yo+50,50,50,"-0.01",ID_BTN_L_P_ZN_01);
+
+
 
     //==========================================
-    add_label(135,210,100,20,"right controller",0);
+    add_label(270+52,210,100,20,"right controller",0);
 
     yo=270;
     xo=0;
@@ -548,22 +844,49 @@ void create_gui()
     add_button(xo+65,yo+50,50,50,"-0.1",ID_BTN_R_ZN_01);
 
 
+    //#################
+
+    yo=270;
+    xo=360;
+
+    add_label(xo+25,yo-30,45,20,"X pos:",0);
+    sprintf(stlabel,"%1.2f",offset_position_right_x);
+    HWND_LABEL_R_PX = add_label(xo+70,yo-30,40,20,stlabel,ID_LABEL_R_PX);
+
+    add_button(xo+10,yo,50,50,"+0.10",ID_BTN_R_P_XP_10);
+    add_button(xo+10,yo+50,50,50,"-0.10",ID_BTN_R_P_XN_10);
+
+    add_button(xo+65,yo,50,50,"+0.01",ID_BTN_R_P_XP_01);
+    add_button(xo+65,yo+50,50,50,"-0.01",ID_BTN_R_P_XN_01);
+
+    yo=270;
+    xo=480;
+
+    add_label(xo+25,yo-30,45,20,"Y pos:",0);
+    sprintf(stlabel,"%1.2f",offset_position_right_y);
+    HWND_LABEL_R_PY = add_label(xo+70,yo-30,40,20,stlabel,ID_LABEL_R_PY);
+
+    add_button(xo+10,yo,50,50,"+0.10",ID_BTN_R_P_YP_10);
+    add_button(xo+10,yo+50,50,50,"-0.10",ID_BTN_R_P_YN_10);
+
+    add_button(xo+65,yo,50,50,"+0.01",ID_BTN_R_P_YP_01);
+    add_button(xo+65,yo+50,50,50,"-0.01",ID_BTN_R_P_YN_01);
+
+    yo=270;
+    xo=600;
+
+    add_label(xo+25,yo-30,45,20,"Z pos:",0);
+    sprintf(stlabel,"%1.2f",offset_position_right_z);
+    HWND_LABEL_R_PZ = add_label(xo+70,yo-30,40,20,stlabel,ID_LABEL_R_PZ);
+
+    add_button(xo+10,yo,50,50,"+0.10",ID_BTN_R_P_ZP_10);
+    add_button(xo+10,yo+50,50,50,"-0.10",ID_BTN_R_P_ZN_10);
+
+    add_button(xo+65,yo,50,50,"+0.01",ID_BTN_R_P_ZP_01);
+    add_button(xo+65,yo+50,50,50,"-0.01",ID_BTN_R_P_ZN_01);
 
 
 
-    /*
-     Novos botões:
-
-     - Fazer pos atual (não incluindo Z) como novo offset (mirar e cortar rapido)
-        -> definir offset
-
-     -> mover para origem (0,0,0) (levando offset em consideração)
-
-     -> posicao de troca de ferramenta e wp
-
-     -> colocar cores nos botões (especialmente botão verde para iniciar
-                                   e botão vermelho para parar)
-    */
 
 
 
@@ -619,7 +942,9 @@ DWORD WINAPI thread_gui( void *ptr )
     //wait a bit before actually launching the gui
     //unity seems to do some funky stuff with windows that
     //its process owns at startup
+    #ifndef DEBUG
     Sleep(8000);
+    #endif // DEBUG
 
     //creates the form
     create_gui();

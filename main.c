@@ -102,6 +102,13 @@ double offset_rotation_right_x=0.0;
 double offset_rotation_right_y=0.0;
 double offset_rotation_right_z=0.0;
 
+double offset_position_left_x=0.0;
+double offset_position_left_y=0.0;
+double offset_position_left_z=0.0;
+
+double offset_position_right_x=0.0;
+double offset_position_right_y=0.0;
+double offset_position_right_z=0.0;
 
 //those are not constant, and will be corrected by xrStringToPath as needed.
 uint64_t id_user_hand_left = 9;
@@ -202,6 +209,36 @@ int read_config(char *config_file)
                 //conferir qual tipo de informacao temos aqui
                 sscanf(line,"%[^=]",cmd);
 
+                if (strcmp(cmd,"left_hand_position_offset_x")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_position_left_x = double_temp;
+                }else
+                if (strcmp(cmd,"left_hand_position_offset_y")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_position_left_y = double_temp;
+                }else
+                if (strcmp(cmd,"left_hand_position_offset_z")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_position_left_z = double_temp;
+                }else
+                if (strcmp(cmd,"right_hand_position_offset_x")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_position_right_x = double_temp;
+                }else
+                if (strcmp(cmd,"right_hand_position_offset_y")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_position_right_y = double_temp;
+                }else
+                if (strcmp(cmd,"right_hand_position_offset_z")==0)
+                {
+                    sscanf(line,"%*[^=]=%lf",&double_temp);
+                    offset_position_right_z = double_temp;
+                }else
                 if (strcmp(cmd,"right_hand_rotation_offset_x")==0)
                 {
                     sscanf(line,"%*[^=]=%lf",&double_temp);
@@ -263,9 +300,19 @@ int write_config(char *config_file)
         fprintf(arq,"left_hand_rotation_offset_x=%f\n",radToDeg(offset_rotation_left_x));
         fprintf(arq,"left_hand_rotation_offset_y=%f\n",radToDeg(offset_rotation_left_y));
         fprintf(arq,"left_hand_rotation_offset_z=%f\n",radToDeg(offset_rotation_left_z));
+
         fprintf(arq,"right_hand_rotation_offset_x=%f\n",radToDeg(offset_rotation_right_x));
         fprintf(arq,"right_hand_rotation_offset_y=%f\n",radToDeg(offset_rotation_right_y));
         fprintf(arq,"right_hand_rotation_offset_z=%f\n",radToDeg(offset_rotation_right_z));
+
+        fprintf(arq,"left_hand_position_offset_x=%f\n",offset_position_left_x);
+        fprintf(arq,"left_hand_position_offset_y=%f\n",offset_position_left_y);
+        fprintf(arq,"left_hand_position_offset_z=%f\n",offset_position_left_z);
+
+        fprintf(arq,"right_hand_position_offset_x=%f\n",offset_position_right_x);
+        fprintf(arq,"right_hand_position_offset_y=%f\n",offset_position_right_y);
+        fprintf(arq,"right_hand_position_offset_z=%f\n",offset_position_right_z);
+
         fclose(arq);
         //log_message("Wrote update config in %s\n",config_file);
 
@@ -1424,6 +1471,7 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
                 hand.v[X_AXIS] = location->pose.orientation.x;
                 hand.w = location->pose.orientation.w;
 
+                //adding rotation offset
                 Quaternion rotation;
                 float rotation_zyx[3];
                 rotation_zyx[Z_AXIS] = offset_rotation_left_z;
@@ -1433,11 +1481,25 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
                 Quaternion_multiply(&rotation,&hand,&hand);
 
 
+
+                float pr_zyx[3];// the desired position offset
+                float rotated_pr_zyx[3];//holds the "rotated" position offset
+                pr_zyx[X_AXIS] = offset_position_left_x;
+                pr_zyx[Y_AXIS] = offset_position_left_y;
+                pr_zyx[Z_AXIS] = offset_position_left_z;
+                Quaternion_rotate(&rotation,pr_zyx,rotated_pr_zyx);//do the rotation
+
+                //apply position offset (it is catesian 3D stuff so just sum the dif)
+                location->pose.position.x += rotated_pr_zyx[X_AXIS];
+                location->pose.position.y += rotated_pr_zyx[Y_AXIS];
+                location->pose.position.z += rotated_pr_zyx[Z_AXIS];
+
+
+                /* returning to the xyzw of OpenXR*/
                 location->pose.orientation.z = hand.v[Z_AXIS];
                 location->pose.orientation.y = hand.v[Y_AXIS];
                 location->pose.orientation.x = hand.v[X_AXIS];
                 location->pose.orientation.w = hand.w;
-
 
                 return ret;
             }
@@ -1450,20 +1512,37 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
 
                 Quaternion hand;
 
-                /* Library uses zyxw, openXR uses xyzw */
+                /* Library uses zyxw, openXR uses xyzw quaternions*/
                 hand.v[Z_AXIS] = location->pose.orientation.z;
                 hand.v[Y_AXIS] = location->pose.orientation.y;
                 hand.v[X_AXIS] = location->pose.orientation.x;
                 hand.w = location->pose.orientation.w;
 
+
+                //adding rotation offset
                 Quaternion rotation;
                 float rotation_zyx[3];
                 rotation_zyx[Z_AXIS] = offset_rotation_right_z;
                 rotation_zyx[Y_AXIS] = offset_rotation_right_y;
                 rotation_zyx[X_AXIS] = offset_rotation_right_x;
-                Quaternion_fromEulerZYX(rotation_zyx,&rotation);
-                Quaternion_multiply(&rotation,&hand,&hand);
+                Quaternion_fromEulerZYX(rotation_zyx,&rotation);//quatertion with rotation offsets
+                Quaternion_multiply(&rotation,&hand,&hand);//rotating the "real angle" with the added offset
 
+
+                float pr_zyx[3];// the desired position offset
+                float rotated_pr_zyx[3];//holds the "rotated" position offset
+                pr_zyx[X_AXIS] = offset_position_right_x;
+                pr_zyx[Y_AXIS] = offset_position_right_y;
+                pr_zyx[Z_AXIS] = offset_position_right_z;
+                Quaternion_rotate(&rotation,pr_zyx,rotated_pr_zyx);//do the rotation
+
+                //apply position offset (it is catesian 3D stuff so just sum the dif)
+                location->pose.position.x += rotated_pr_zyx[X_AXIS];
+                location->pose.position.y += rotated_pr_zyx[Y_AXIS];
+                location->pose.position.z += rotated_pr_zyx[Z_AXIS];
+
+
+                /* returning to the xyzw of OpenXR quaternions*/
                 location->pose.orientation.z = hand.v[Z_AXIS];
                 location->pose.orientation.y = hand.v[Y_AXIS];
                 location->pose.orientation.x = hand.v[X_AXIS];
@@ -1744,9 +1823,54 @@ void sprint_quaternion(char *s,Quaternion q)
 }
 
 
+/*
+    Keep in mind that this project is a DLL and the main function is not called!
+
+    (unless you are trying something in a debug build as a console/gui application.)
+
+    bellow its just a bunch of tests of stuff in the code without having to properly
+    launch a game.
+
+*/
 
 int main()
 {
+
+    /*
+    void print_xyz(float coords[3])
+    {
+        printf("%.4f x %.4f x %.4f\n",
+               coords[X_AXIS],
+               coords[Y_AXIS],
+               coords[Z_AXIS]
+               );
+    }
+
+
+    Quaternion rotation;
+    float rotation_zyx[3];
+    rotation_zyx[Z_AXIS] = degToRad(0.0);
+    rotation_zyx[Y_AXIS] = degToRad(0.0);
+    rotation_zyx[X_AXIS] = degToRad(0.0);
+    Quaternion_fromEulerZYX(rotation_zyx,&rotation);
+
+
+    //trying to produce XYZ rotation after offsets were added
+    float pr_zyx[3];
+    float rotated_pr_zyx[3];
+    pr_zyx[X_AXIS] = 0.0;
+    pr_zyx[Y_AXIS] = 10.0;
+    pr_zyx[Z_AXIS] = 0.0;
+    Quaternion_rotate(&rotation,pr_zyx,rotated_pr_zyx);
+
+
+    print_xyz(pr_zyx);
+    print_xyz(rotated_pr_zyx);
+
+
+    exit(0);
+    */
+
 
 
     launch_gui_thread();
@@ -1755,6 +1879,7 @@ int main()
     {
         Sleep(5);
     }
+
 
     /*
     char root_folder[256];

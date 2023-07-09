@@ -35,6 +35,14 @@ extern double offset_rotation_right_x;
 extern double offset_rotation_right_y;
 extern double offset_rotation_right_z;
 
+extern double offset_position_left_x;
+extern double offset_position_left_y;
+extern double offset_position_left_z;
+
+extern double offset_position_right_x;
+extern double offset_position_right_y;
+extern double offset_position_right_z;
+
 extern char config_file_path[256];
 
 int write_config();

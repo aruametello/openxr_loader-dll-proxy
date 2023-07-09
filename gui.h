@@ -19,6 +19,9 @@ void cmd_set_r_ry(double val);
 void cmd_set_r_rz(double val);
 
 
+void cmd_set_r_py(double val);
+void cmd_set_l_py(double val);
+
 HANDLE add_button(int x,int y,int tx,int ty,char *text,int id);
 HANDLE add_label(int x,int y,int tx,int ty,char *text,int id);
 

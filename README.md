@@ -28,17 +28,22 @@ ideas that i desire to explore in the future:
  
 
 
-Compiling:
+# Compiling:
 
 sorry but I havent provided a makefile yet.
 
 this is a pure C application that can be compiled with mingw-w64 from the msys2 packages, the OpenXR headers are required (package is mingw-w64-x86_64-openxr-sdk ?) 
 
 the makefile would be something that does this:
+
 gcc.exe -Wall -fexceptions -O2 -Wall -DBUILD_DLL -march=core2 -Wall -std=c11 -m64 -ID:\compiladores\msys64\mingw64\include -c D:\projetos\dll_proxy_gcc\gui.c -o obj\Release\gui.o
+
 gcc.exe -Wall -fexceptions -O2 -Wall -DBUILD_DLL -march=core2 -Wall -std=c11 -m64 -ID:\compiladores\msys64\mingw64\include -c D:\projetos\dll_proxy_gcc\main.c -o obj\Release\main.o
+
 gcc.exe -Wall -fexceptions -O2 -Wall -DBUILD_DLL -march=core2 -Wall -std=c11 -m64 -ID:\compiladores\msys64\mingw64\include -c D:\projetos\dll_proxy_gcc\Quaternion.c -o obj\Release\Quaternion.o
+
 gcc.exe -shared   -Wl,--dll -LD:\compiladores\msys64\mingw64\lib obj\Release\gui.o obj\Release\main.o obj\Release\Quaternion.o  -o "C:\Program Files (x86)\Steam\steamapps\common\VAIL\Engine\Binaries\ThirdParty\OpenXR\win64\openxr_loader.dll" -s -LD D:\projetos\dll_proxy_gcc\openxr_loader.def -static-libstdc++ -static-libgcc -m64  -lgdi32 -lkernel32 -lpsapi -luser32
+
 
 adjust your paths acordingly and perhalps drop the compiled .dll into the required folder of game you are using to test with. (i tested mostly with Bonelab and Vail VR)
 

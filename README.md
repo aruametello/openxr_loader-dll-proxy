@@ -1,6 +1,6 @@
 # openxr_loader.dll proxy
 
-![alt text](https://github.com/aruametello/openxr_loader-dll-proxy/blob/main/screenshot.png?raw=true)
+![alt text](https://github.com/aruametello/openxr_loader-dll-proxy/blob/main/screenshot-2.png?raw=true)
 
 A proxy dll to Khronos openxr_loader.dll. (https://registry.khronos.org/OpenXR/specs/1.0/loader.html)
 
@@ -9,6 +9,9 @@ video description and demonstration: https://www.youtube.com/watch?v=WixaeDdFIWg
 it exposes bilateral comunications between the XR aplication and the OpenXR api, allowing the user to change inputs and outputs to OpenXR.
 
 the target here is to implement a setting (per game) of controller rotation offsets. i personally think every vr game should have this as an option the same way desktop mouse driven first person shooters have mouse sensitivity settings.
+
+
+![alt text](https://github.com/aruametello/openxr_loader-dll-proxy/blob/main/video_demo_offsets.mp4?raw=true)
 
 in short: "i will do my own settings, with blackjack and hookers".
 

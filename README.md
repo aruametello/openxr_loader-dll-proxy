@@ -11,6 +11,11 @@ it exposes bilateral comunications between the XR aplication and the OpenXR api,
 the target here is to implement a setting (per game) of controller rotation and position offsets. 
 I personally think every vr game should have this as an option the same way desktop mouse driven first person shooters have mouse sensitivity settings.
 
+
+https://github.com/aruametello/openxr_loader-dll-proxy/assets/25987323/0478a50b-3348-48ee-9340-1d7ea83c6feb
+
+
+
 in short: "i will do my own settings, with blackjack and hookers".
 
 This could serve as a starting point for a more complex tool to tweak everything between OpenXR and aplication, like OpenVR Advanced Settings does for OpenVR.

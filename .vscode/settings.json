@@ -1,0 +1,6 @@
+{
+  "terminal.integrated.env.windows": {
+    "PATH": "C:\\msys64\\usr\\bin;C:\\devkit\\msys64\\ucrt64\\bin;C:\\devkit\\msys64\\drmemory\\bin64;${env:PATH};",
+    "GAHAFAKA": "whatthehell"
+  }
+}

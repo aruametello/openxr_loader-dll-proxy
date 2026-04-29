@@ -1,0 +1,17 @@
+# vc provavelmente quer a pasta inteira .vscode em novos projetos C
+
+# a config procura o msys2 em c:\msys2, symlinks são seu amigo
+
+# vc pode usar o pacman no terminal do vscode
+
+
+
+#----------------------------------------
+# gerencia do pacman
+# atualiza tudo
+pacman -Syuu --noconfirm
+# limpa toda a cache
+pacman -Scc --noconfirm
+
+# guarda uma lista de pacotes instalados
+pacman -Qq > installed-packages.txt

@@ -30,4 +30,6 @@ ideas that i desire to explore in the future:
 
 # Compiling:
 
-the precompiled binaries were made using msys2 mingw64-ucrt, you may 
+the precompiled binaries were made using msys2 mingw64-ucrt, but is likely that other compilers will work as well.
+
+the makefile has a target named "dll_release" that produces the desired, required dll file for the proxy.

@@ -1,0 +1,10 @@
+{
+  "file_format_version": "1.0.0",
+  "api_layer": {
+    "name": "XR_APILAYER_OSSO_layer_demo",
+    "library_path": "obj\\LayerDemo\\openxr_api_layer_demo.dll",
+    "api_version": "1.0",
+    "implementation_version": "1",
+    "description": "OpenXR API layer demo: logs xrLocateSpace position data"
+  }
+}

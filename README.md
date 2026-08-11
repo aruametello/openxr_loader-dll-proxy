@@ -1,3 +1,5 @@
+
+
 # openxr_loader.dll proxy
 
 ![screenshot](https://github.com/aruametello/openxr_loader-dll-proxy/blob/main/screenshot-2.png?raw=true)
@@ -32,4 +34,4 @@ ideas that i desire to explore in the future:
 
 the precompiled binaries were made using msys2 mingw64-ucrt, but is likely that other compilers will work as well.
 
-the makefile has a target named "dll_release" that produces the desired, required dll file for the proxy.
+the makefile has a target named "release" that produces the desired, required dll file for the proxy.

@@ -33,3 +33,13 @@ ideas that i desire to explore in the future:
 the precompiled binaries were made using msys2 mingw64-ucrt, but is likely that other compilers will work as well.
 
 the makefile has a target named "dll_release" that produces the desired, required dll file for the proxy.
+
+## BONELAB controller-local translation patch
+
+This checkout is based on [aruametello/openxr_loader-dll-proxy](https://github.com/aruametello/openxr_loader-dll-proxy). In `xrLocateSpace`, position offsets are rotated by the incoming tracked hand orientation using OpenXR's X-Y-Z component order before being added to each hand pose. This makes position-only offsets controller-local. Configured rotation offsets continue to affect orientation as before.
+
+For the tested BONELAB setup, configure both `left_hand_position_offset_y` and `right_hand_position_offset_y` to `-0.050800` in the game's `openxr_loader_config.txt`. The build in `obj/Release/openxr_loader.dll` is the proxy DLL; install it as `openxr_loader.dll` beside `original_openxr_loader.dll`.
+
+### Authorship
+
+The controller-local translation code in this patch was written by an AI assistant using Copilot SDK in VS Code. The person requesting the fix contributed no code; they provided the issue description and in-game test results.

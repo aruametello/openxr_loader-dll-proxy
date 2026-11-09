@@ -27,7 +27,7 @@ COMMON_FLAGS := $(COMMON_WARN) -fexceptions -DBUILD_DLL -march=core2 -m64 $(CSTD
 ifeq ($(strip $(OPENXR_INCLUDE)),)
 INCLUDE_FLAGS :=
 else
-INCLUDE_FLAGS := -I$(OPENXR_INCLUDE)
+INCLUDE_FLAGS := -idirafter $(OPENXR_INCLUDE)
 endif
 
 ifeq ($(strip $(OPENXR_LIB)),)

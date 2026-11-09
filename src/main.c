@@ -55,7 +55,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <stdio.h>
-#include <openxr\openxr.h>
+#include <openxr/openxr.h>
 #include <time.h>
 #include <math.h>
 #include <ctype.h>
@@ -1519,6 +1519,10 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
         hand.v[Y_AXIS] = location->pose.orientation.y;
         hand.v[X_AXIS] = location->pose.orientation.x;
         hand.w = location->pose.orientation.w;
+        Quaternion tracked_hand = {
+            {location->pose.orientation.x, location->pose.orientation.y, location->pose.orientation.z},
+            location->pose.orientation.w
+        };
 
         // adding rotation offset
         Quaternion rotation;
@@ -1529,17 +1533,18 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
         Quaternion_fromEulerZYX(rotation_zyx, &rotation);
         Quaternion_multiply(&rotation, &hand, &hand);
 
-        float pr_zyx[3];         // the desired position offset
-        float rotated_pr_zyx[3]; // holds the "rotated" position offset
-        pr_zyx[X_AXIS] = offset_position_left_x;
-        pr_zyx[Y_AXIS] = offset_position_left_y;
-        pr_zyx[Z_AXIS] = offset_position_left_z;
-        Quaternion_rotate(&rotation, pr_zyx, rotated_pr_zyx); // do the rotation
+        float pr_xyz[3] = {
+            offset_position_left_x,
+            offset_position_left_y,
+            offset_position_left_z
+        };
+        float rotated_pr_xyz[3];
+        Quaternion_rotate(&tracked_hand, pr_xyz, rotated_pr_xyz);
 
         // apply position offset (it is catesian 3D stuff so just sum the dif)
-        location->pose.position.x += rotated_pr_zyx[X_AXIS];
-        location->pose.position.y += rotated_pr_zyx[Y_AXIS];
-        location->pose.position.z += rotated_pr_zyx[Z_AXIS];
+        location->pose.position.x += rotated_pr_xyz[0];
+        location->pose.position.y += rotated_pr_xyz[1];
+        location->pose.position.z += rotated_pr_xyz[2];
 
         /* returning to the xyzw of OpenXR*/
         location->pose.orientation.z = hand.v[Z_AXIS];
@@ -1563,6 +1568,10 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
         hand.v[Y_AXIS] = location->pose.orientation.y;
         hand.v[X_AXIS] = location->pose.orientation.x;
         hand.w = location->pose.orientation.w;
+        Quaternion tracked_hand = {
+            {location->pose.orientation.x, location->pose.orientation.y, location->pose.orientation.z},
+            location->pose.orientation.w
+        };
 
         // adding rotation offset
         Quaternion rotation;
@@ -1573,17 +1582,18 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
         Quaternion_fromEulerZYX(rotation_zyx, &rotation); // quatertion with rotation offsets
         Quaternion_multiply(&rotation, &hand, &hand);     // rotating the "real angle" with the added offset
 
-        float pr_zyx[3];         // the desired position offset
-        float rotated_pr_zyx[3]; // holds the "rotated" position offset
-        pr_zyx[X_AXIS] = offset_position_right_x;
-        pr_zyx[Y_AXIS] = offset_position_right_y;
-        pr_zyx[Z_AXIS] = offset_position_right_z;
-        Quaternion_rotate(&rotation, pr_zyx, rotated_pr_zyx); // do the rotation
+        float pr_xyz[3] = {
+            offset_position_right_x,
+            offset_position_right_y,
+            offset_position_right_z
+        };
+        float rotated_pr_xyz[3];
+        Quaternion_rotate(&tracked_hand, pr_xyz, rotated_pr_xyz);
 
         // apply position offset (it is catesian 3D stuff so just sum the dif)
-        location->pose.position.x += rotated_pr_zyx[X_AXIS];
-        location->pose.position.y += rotated_pr_zyx[Y_AXIS];
-        location->pose.position.z += rotated_pr_zyx[Z_AXIS];
+        location->pose.position.x += rotated_pr_xyz[0];
+        location->pose.position.y += rotated_pr_xyz[1];
+        location->pose.position.z += rotated_pr_xyz[2];
 
         /* returning to the xyzw of OpenXR quaternions*/
         location->pose.orientation.z = hand.v[Z_AXIS];

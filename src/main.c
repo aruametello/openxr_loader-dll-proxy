@@ -62,7 +62,8 @@
 #include <string.h>
 
 #include "main.h"
-#include "gui.h"
+#include "devices.h"
+#include "ui.h"
 
 // uses https://github.com/MartinWeigel/Quaternion for quaternions because i suck at math
 #include "Quaternion.h"
@@ -88,66 +89,6 @@ FILE *h_log = 0;
 char root_folder[256];      // workdir, OG dll and config file location.
 char config_file_path[256]; // fullpath of the config file
 
-/*
-    some default values for the offsets
-
-*/
-double offset_rotation_left_x = 0.0;
-double offset_rotation_left_y = 0.0;
-double offset_rotation_left_z = 0.0;
-
-double offset_rotation_right_x = 0.0;
-double offset_rotation_right_y = 0.0;
-double offset_rotation_right_z = 0.0;
-
-double offset_position_left_x = 0.0;
-double offset_position_left_y = 0.0;
-double offset_position_left_z = 0.0;
-
-double offset_position_right_x = 0.0;
-double offset_position_right_y = 0.0;
-double offset_position_right_z = 0.0;
-
-// those are not constant, and will be corrected by xrStringToPath as needed.
-XrPath id_user_hand_left = 9;
-XrPath id_user_hand_right = 10;
-
-/*
-    aparently unity does initialize all controlers that it knows regardless
-    of availability in the system.
-
-    since the user might be a layman, just store all possible controlers
-    on a "left hand" and "right hand" list, if any of those are found, apply offsets.
-
-    if not, the user would have to know what controler he does have to assign
-    the offsets only to it.
-
-    knows controler types so far:
-        htcvivecontroller - vive wands? no idea
-        khrsimplecontroller - sounds like a skeleton driver
-        microsoftmotioncontroller - probaly windows mixed reality
-        oculustouchcontroller - oculus touch (any version?)
-        valveindexcontroller - valve knuckles
-
-*/
-int action_space_list_hand_left_cnt = 0;
-XrSpace action_space_list_hand_left[64];
-int action_space_list_hand_right_cnt = 0;
-XrSpace action_space_list_hand_right[64];
-
-int ref_action_space_list_hand_left_cnt = 0;
-XrAction ref_action_space_list_hand_left[64];
-int ref_action_space_list_hand_right_cnt = 0;
-XrAction ref_action_space_list_hand_right[64];
-
-#define ACTION_SPACE_LIST_CAPACITY 64
-
-/*
-    but beware!
-    the idea above is dumb and will apply offsets to anything that
-    has the subspace /user/hand/left or /user/hand/right
-*/
-
 int log_message(const char *fmt, ...)
 {
   // log file is not opened?
@@ -172,6 +113,45 @@ int log_message(const char *fmt, ...)
 }
 
 /*
+    the device model (devices.c) talks in plain strings so the interface can
+    use it without an OpenXR SDK. this is where its messages end up.
+*/
+static void proxy_log(const char *message)
+{
+  log_message("%s", message);
+}
+
+/*
+    OpenXR handles are pointers, the device model keeps them as numbers.
+*/
+static uint64_t handle_id(const void *handle)
+{
+  return (uint64_t)(uintptr_t)handle;
+}
+
+/*
+    says what the offsets will do to each hand, right after loading.
+*/
+static void log_hand(const char *subaction_path)
+{
+  xrdev_device device;
+  int index = xrdev_find(subaction_path);
+
+  if (index < 0 || !xrdev_get(index, &device))
+    return;
+
+  log_message("%s (%s): rotation %fx %fx %f degrees, position %fx %fx %f meters",
+              device.name,
+              device.path[0] ? device.path : "no subaction path",
+              xrdev_rad2deg(device.rotation[XRDEV_AXIS_X]),
+              xrdev_rad2deg(device.rotation[XRDEV_AXIS_Y]),
+              xrdev_rad2deg(device.rotation[XRDEV_AXIS_Z]),
+              device.position[XRDEV_AXIS_X],
+              device.position[XRDEV_AXIS_Y],
+              device.position[XRDEV_AXIS_Z]);
+}
+
+/*
     Read the configuration file
 */
 void str_lowercase(char *str)
@@ -179,172 +159,6 @@ void str_lowercase(char *str)
   for (int i = 0; str[i]; i++)
     str[i] = tolower(str[i]);
 }
-int read_config(char *config_file)
-{
-  double double_temp;
-  char line[512];
-  FILE *arq = fopen(config_file, "r");
-
-  if (!arq)
-  {
-    log_message("Could not find my config file at:%s!\n We are trying to run with default offsets now(all zeroes)\n", config_file);
-    write_config(config_file); // write a new config file
-    return 1;
-  }
-
-  while (fgets(line, sizeof(line), arq) != NULL)
-  {
-    char cmd[512] = {0};
-    char *value;
-    char *comment;
-
-    line[strcspn(line, "\r\n")] = 0;
-
-    comment = strchr(line, '#');
-    if (comment)
-      *comment = 0;
-
-    while (isspace((unsigned char)*line))
-      memmove(line, line + 1, strlen(line));
-
-    if (line[0] == 0)
-      continue;
-
-    str_lowercase(line);
-
-    value = strchr(line, '=');
-    if (!value)
-    {
-      fclose(arq);
-      log_message("Invalid line found in the config file:%s!\n Some settings might reset to defaults!\n", config_file);
-      write_config(config_file); // write a new config file
-      return 1;
-    }
-
-    *value = 0;
-    value++;
-
-    // trim trailing spaces in key
-    {
-      size_t key_len = strlen(line);
-      while (key_len > 0 && isspace((unsigned char)line[key_len - 1]))
-      {
-        line[key_len - 1] = 0;
-        key_len--;
-      }
-    }
-
-    while (isspace((unsigned char)*value))
-      value++;
-
-    {
-      size_t cmd_len = strnlen(line, sizeof(cmd) - 1);
-      memcpy(cmd, line, cmd_len);
-      cmd[cmd_len] = 0;
-    }
-
-    if (sscanf(value, "%lf", &double_temp) != 1)
-    {
-      fclose(arq);
-      log_message("Invalid value found in the config file:%s!\n Some settings might reset to defaults!\n", config_file);
-      write_config(config_file); // write a new config file
-      return 1;
-    }
-
-    if (strcmp(cmd, "left_hand_position_offset_x") == 0)
-    {
-      offset_position_left_x = double_temp;
-    }
-    else if (strcmp(cmd, "left_hand_position_offset_y") == 0)
-    {
-      offset_position_left_y = double_temp;
-    }
-    else if (strcmp(cmd, "left_hand_position_offset_z") == 0)
-    {
-      offset_position_left_z = double_temp;
-    }
-    else if (strcmp(cmd, "right_hand_position_offset_x") == 0)
-    {
-      offset_position_right_x = double_temp;
-    }
-    else if (strcmp(cmd, "right_hand_position_offset_y") == 0)
-    {
-      offset_position_right_y = double_temp;
-    }
-    else if (strcmp(cmd, "right_hand_position_offset_z") == 0)
-    {
-      offset_position_right_z = double_temp;
-    }
-    else if (strcmp(cmd, "right_hand_rotation_offset_x") == 0)
-    {
-      offset_rotation_right_x = degToRad(double_temp);
-    }
-    else if (strcmp(cmd, "right_hand_rotation_offset_y") == 0)
-    {
-      offset_rotation_right_y = degToRad(double_temp);
-    }
-    else if (strcmp(cmd, "right_hand_rotation_offset_z") == 0)
-    {
-      offset_rotation_right_z = degToRad(double_temp);
-    }
-    else if (strcmp(cmd, "left_hand_rotation_offset_x") == 0)
-    {
-      offset_rotation_left_x = degToRad(double_temp);
-    }
-    else if (strcmp(cmd, "left_hand_rotation_offset_y") == 0)
-    {
-      offset_rotation_left_y = degToRad(double_temp);
-    }
-    else if (strcmp(cmd, "left_hand_rotation_offset_z") == 0)
-    {
-      offset_rotation_left_z = degToRad(double_temp);
-    }
-    else
-    {
-      fclose(arq);
-      log_message("Invalid line found in the config file:%s!\n Some settings might reset to defaults!\n", config_file);
-      write_config(config_file); // write a new config file
-      return 1;
-    }
-  }
-
-  fclose(arq);
-  return 1;
-}
-
-int write_config(const char *config_file)
-{
-  FILE *arq = fopen(config_file, "w");
-  if (arq)
-  {
-    fprintf(arq, "#offsets here are written in degrees!\n");
-    fprintf(arq, "left_hand_rotation_offset_x=%f\n", radToDeg(offset_rotation_left_x));
-    fprintf(arq, "left_hand_rotation_offset_y=%f\n", radToDeg(offset_rotation_left_y));
-    fprintf(arq, "left_hand_rotation_offset_z=%f\n", radToDeg(offset_rotation_left_z));
-
-    fprintf(arq, "right_hand_rotation_offset_x=%f\n", radToDeg(offset_rotation_right_x));
-    fprintf(arq, "right_hand_rotation_offset_y=%f\n", radToDeg(offset_rotation_right_y));
-    fprintf(arq, "right_hand_rotation_offset_z=%f\n", radToDeg(offset_rotation_right_z));
-
-    fprintf(arq, "left_hand_position_offset_x=%f\n", offset_position_left_x);
-    fprintf(arq, "left_hand_position_offset_y=%f\n", offset_position_left_y);
-    fprintf(arq, "left_hand_position_offset_z=%f\n", offset_position_left_z);
-
-    fprintf(arq, "right_hand_position_offset_x=%f\n", offset_position_right_x);
-    fprintf(arq, "right_hand_position_offset_y=%f\n", offset_position_right_y);
-    fprintf(arq, "right_hand_position_offset_z=%f\n", offset_position_right_z);
-
-    fclose(arq);
-    // log_message("Wrote update config in %s\n",config_file);
-  }
-  else
-  {
-    log_message("Could not write to config file located in: %s\n", config_file);
-  }
-
-  return 1;
-}
-
 /*
     trying to find where we are (where is openxr_loader.dll?)
 
@@ -647,22 +461,16 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
       exit(0);
     }
 
-    // MessageBoxA(0,config_file_path,"OpenXR controler offset mod",MB_ICONERROR);
-
-    read_config(config_file_path);
+    // the device model owns the offsets and the interface reads them from
+    // it, messages it logs end up in the same log file.
+    xrdev_set_logger(proxy_log);
+    xrdev_init();
+    xrdev_load(config_file_path);
 
     log_message("read configuration file from: %s\n", config_file_path);
 
-    log_message("Using the following rotation offsets:");
-    log_message("left: %fx%fx%f",
-                radToDeg(offset_rotation_left_x),
-                radToDeg(offset_rotation_left_y),
-                radToDeg(offset_rotation_left_z));
-    log_message("right: %fx%fx%f",
-                radToDeg(offset_rotation_right_x),
-                radToDeg(offset_rotation_right_y),
-                radToDeg(offset_rotation_right_z));
-    log_message("");
+    log_hand(XRDEV_PATH_HAND_LEFT);
+    log_hand(XRDEV_PATH_HAND_RIGHT);
 
     // jumptable memory
     jump_table = calloc(jump_table_size, sizeof(*jump_table));
@@ -836,19 +644,14 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
     assign_jump("xrWaitSwapchainImage",(PFN_xrVoidFunction) xrWaitSwapchainImage);
     */
 
-    // launch the gui thread
-
-    thread_gui_data *gui_stuff = (thread_gui_data *)malloc(sizeof(thread_gui_data));
-    strncpy(gui_stuff->config_fp, config_file_path, sizeof(gui_stuff->config_fp) - 1);
-    gui_stuff->config_fp[sizeof(gui_stuff->config_fp) - 1] = 0;
-
-    launch_gui_thread(gui_stuff);
+    // launch the interface thread
+    xrui_launch(config_file_path);
   }
 
   if (reason == DLL_PROCESS_DETACH)
   {
     log_message("--- DLL_PROCESS_DETACH, end of log ---");
-    kill_gui();
+    xrui_close();
     log_close();
     free(jump_table);
     free(jump_table_names);
@@ -1022,35 +825,19 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateAction(
                 createInfo->localizedActionName,
                 *action);
 
-    // list subpaths? (i dunno even what that is exactly)
+    /*
+        tell the device model which devices this action is bound to. it also
+        keeps the action name, which is how it still finds a hand when the
+        game names a controller "left-controller-*" instead of using
+        /user/hand/left as the subaction path.
+    */
+    xrdev_note_action(handle_id(*action), createInfo->actionName,
+                      createInfo->subactionPaths, (int)createInfo->countSubactionPaths);
+
     for (int c = 0; c < createInfo->countSubactionPaths; c++)
     {
-      log_message("Subpath: %u", createInfo->subactionPaths[c]);
-    }
-
-    // bellow is a hack for cases where the game does not use the /user/hand/left|right
-    //"pathString" to describe a controller, but the "actionname" related to the controller
-    // the hack itself is horrible and more like a test to see what happens then.
-
-    // does this actionName contains "left-controller" in the name
-    // TODO: match only stuff saying left-controller-*-pose ?
-    if (strncmp(createInfo->actionName, "left-controller", 15) == 0)
-    {
-      log_message("NOTICE: kept %s as a reference for the left controller. (%u)", createInfo->actionName, *action);
-      if (ref_action_space_list_hand_left_cnt < ACTION_SPACE_LIST_CAPACITY)
-      {
-        ref_action_space_list_hand_left[ref_action_space_list_hand_left_cnt] = *action;
-        ref_action_space_list_hand_left_cnt++;
-      }
-    }
-    else if (strncmp(createInfo->actionName, "right-controller", 16) == 0)
-    {
-      log_message("NOTICE: kept %s as a reference for the right controller. (%lu)", createInfo->actionName, *action);
-      if (ref_action_space_list_hand_right_cnt < ACTION_SPACE_LIST_CAPACITY)
-      {
-        ref_action_space_list_hand_right[ref_action_space_list_hand_right_cnt] = *action;
-        ref_action_space_list_hand_right_cnt++;
-      }
+      const char *subpath = xrdev_path_string(createInfo->subactionPaths[c]);
+      log_message("Subpath: %u (%s)", createInfo->subactionPaths[c], subpath ? subpath : "unknown");
     }
   }
 
@@ -1086,66 +873,29 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateActionSpace(
 
   XrResult ret = _xrCreateActionSpace(session, createInfo, space);
 
-  log_message("xrCreateActionSpace action:%u  subactionpath:%lu next:%u space out:%lu",
-              createInfo->action,
-              // createInfo->poseInActionSpace,//algo sobre coordenadas desse action space
-              createInfo->subactionPath,
-              createInfo->next,
-              *space);
+  log_message("xrCreateActionSpace action:%p subactionpath:%lu next:%p space:%p",
+              (const void *)createInfo->action,
+              (unsigned long)createInfo->subactionPath,
+              (const void *)createInfo->next,
+              (const void *)*space);
 
-  //===================================
-  // is the "thing" attached to the user left hand or right hand? put it in the list...
-  if (createInfo->subactionPath == id_user_hand_left)
+  /*
+      the device model decides which device owns this space: by the subaction
+      path, or by the action it was created for.
+  */
   {
-    log_message("NOTICE: assigned ActionSpace %u to the left controller by xrStringToPath match.", createInfo->action);
-    if (action_space_list_hand_left_cnt < ACTION_SPACE_LIST_CAPACITY)
+    int device = xrdev_note_action_space(handle_id(*space), createInfo->subactionPath,
+                                         handle_id(createInfo->action));
+    if (device >= 0)
     {
-      action_space_list_hand_left[action_space_list_hand_left_cnt] = *space;
-      action_space_list_hand_left_cnt++;
+      xrdev_device owner;
+      if (xrdev_get(device, &owner))
+        log_message("NOTICE: ActionSpace %p belongs to %s (%s)",
+                    (const void *)*space, owner.name, owner.path);
     }
-    return ret;
+    else
+      log_message("NOTICE: ActionSpace %p is not assigned to any offset.", (const void *)*space);
   }
-  if (createInfo->subactionPath == id_user_hand_right)
-  {
-    log_message("NOTICE: assigned ActionSpace %u to the right controller by xrStringToPath match.", createInfo->action);
-    if (action_space_list_hand_right_cnt < ACTION_SPACE_LIST_CAPACITY)
-    {
-      action_space_list_hand_right[action_space_list_hand_right_cnt] = *space;
-      action_space_list_hand_right_cnt++;
-    }
-    return ret;
-  }
-
-  //====================================
-  // is this action related to something known "within" left|right-controller-* ?
-  for (int c = 0; c < ref_action_space_list_hand_left_cnt; c++)
-  {
-    if (ref_action_space_list_hand_left[c] == createInfo->action)
-    {
-      log_message("NOTICE: assigned ActionSpace %u to the left controller by xrCreateAction match.");
-      if (action_space_list_hand_left_cnt < ACTION_SPACE_LIST_CAPACITY)
-      {
-        action_space_list_hand_left[action_space_list_hand_left_cnt] = *space;
-        action_space_list_hand_left_cnt++;
-      }
-      return ret;
-    }
-  }
-  for (int c = 0; c < ref_action_space_list_hand_right_cnt; c++)
-  {
-    if (ref_action_space_list_hand_right[c] == createInfo->action)
-    {
-      log_message("NOTICE: assigned ActionSpace %u to the right controller by xrCreateAction match.");
-      if (action_space_list_hand_right_cnt < ACTION_SPACE_LIST_CAPACITY)
-      {
-        action_space_list_hand_right[action_space_list_hand_right_cnt] = *space;
-        action_space_list_hand_right_cnt++;
-      }
-      return ret;
-    }
-  }
-
-  log_message("NOTICE: ActionSpace %u is not assigned to any offset hacks.", createInfo->action);
 
   return ret;
 }
@@ -1159,6 +909,10 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateInstance(
       Todo: aqui dentro o aplicativo tem uma string q diz
             o seu nome, pode ser charmoso de mostrar na gui
   */
+
+  if (createInfo)
+    xrdev_note_application(createInfo->applicationInfo.applicationName,
+                           createInfo->applicationInfo.engineName);
 
   log_message("xrCreateInstance %d", rand() % 1000);
   return _xrCreateInstance(createInfo, instance);
@@ -1232,6 +986,7 @@ XRAPI_ATTR XrResult XRAPI_CALL xrDestroySpace(
     XrSpace space)
 {
   log_message("xrDestroySpace %d", rand() % 1000);
+  xrdev_forget_space(handle_id(space));
   return _xrDestroySpace(space);
 }
 
@@ -1278,8 +1033,16 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEnumerateBoundSourcesForAction(
     uint32_t *sourceCountOutput,
     XrPath *sources)
 {
-  log_message("xrEnumerateBoundSourcesForAction %d", rand() % 1000);
-  return _xrEnumerateBoundSourcesForAction(session, enumerateInfo, sourceCapacityInput, sourceCountOutput, sources);
+  XrResult ret = _xrEnumerateBoundSourcesForAction(session, enumerateInfo, sourceCapacityInput, sourceCountOutput, sources);
+
+  if (ret == XR_SUCCESS && sources && enumerateInfo)
+  {
+    log_message("xrEnumerateBoundSourcesForAction action %p: %u bound sources",
+                (const void *)enumerateInfo->action, (unsigned)*sourceCountOutput);
+    xrdev_note_action_sources(handle_id(enumerateInfo->action), sources, (int)*sourceCountOutput);
+  }
+
+  return ret;
 }
 
 // xrEnumerateEnvironmentBlendModes
@@ -1426,8 +1189,13 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetCurrentInteractionProfile(
     XrPath topLevelUserPath,
     XrInteractionProfileState *interactionProfile)
 {
-  log_message("xrGetCurrentInteractionProfile %d", rand() % 1000);
-  return _xrGetCurrentInteractionProfile(session, topLevelUserPath, interactionProfile);
+  XrResult ret = _xrGetCurrentInteractionProfile(session, topLevelUserPath, interactionProfile);
+
+  /* the most honest answer to "what controller is in this hand". */
+  if (ret == XR_SUCCESS && interactionProfile)
+    xrdev_note_current_profile(topLevelUserPath, interactionProfile->interactionProfile);
+
+  return ret;
 }
 
 // xrGetInputSourceLocalizedName
@@ -1477,8 +1245,14 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetSystemProperties(
     XrSystemId systemId,
     XrSystemProperties *properties)
 {
-  log_message("xrGetSystemProperties %d", rand() % 1000);
-  return _xrGetSystemProperties(instance, systemId, properties);
+  XrResult ret = _xrGetSystemProperties(instance, systemId, properties);
+
+  /* XrSystemProperties carries no manufacturer string; the model degrades
+     gracefully to the system name alone. */
+  if (ret == XR_SUCCESS && properties)
+    xrdev_note_runtime(NULL, properties->systemName);
+
+  return ret;
 }
 
 // xrGetViewConfigurationProperties
@@ -1506,97 +1280,32 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
   if (location->type == XR_TYPE_SPACE_LOCATION)
   {
 
-    // is this the position data of the left hand?
-    for (int c = 0; c < action_space_list_hand_left_cnt; c++)
+    /*
+        the device model rewrites the pose of whatever device owns the space;
+        the two hands are just the ones the user can adjust.
+    */
     {
-      if (space == action_space_list_hand_left[c])
+      xrdev_pose pose;
+
+      pose.position[0] = location->pose.position.x;
+      pose.position[1] = location->pose.position.y;
+      pose.position[2] = location->pose.position.z;
+      pose.orientation[0] = location->pose.orientation.x;
+      pose.orientation[1] = location->pose.orientation.y;
+      pose.orientation[2] = location->pose.orientation.z;
+      pose.orientation[3] = location->pose.orientation.w;
+
+      if (xrdev_apply_offset(handle_id(space), &pose))
       {
-
-        Quaternion hand;
-
-        /* Library uses zyxw, openXR uses xyzw */
-        hand.v[Z_AXIS] = location->pose.orientation.z;
-        hand.v[Y_AXIS] = location->pose.orientation.y;
-        hand.v[X_AXIS] = location->pose.orientation.x;
-        hand.w = location->pose.orientation.w;
-
-        // adding rotation offset
-        Quaternion rotation;
-        float rotation_zyx[3];
-        rotation_zyx[Z_AXIS] = offset_rotation_left_z;
-        rotation_zyx[Y_AXIS] = offset_rotation_left_y;
-        rotation_zyx[X_AXIS] = offset_rotation_left_x;
-        Quaternion_fromEulerZYX(rotation_zyx, &rotation);
-        Quaternion_multiply(&rotation, &hand, &hand);
-
-        float pr_zyx[3];         // the desired position offset
-        float rotated_pr_zyx[3]; // holds the "rotated" position offset
-        pr_zyx[X_AXIS] = offset_position_left_x;
-        pr_zyx[Y_AXIS] = offset_position_left_y;
-        pr_zyx[Z_AXIS] = offset_position_left_z;
-        Quaternion_rotate(&rotation, pr_zyx, rotated_pr_zyx); // do the rotation
-
-        // apply position offset (it is catesian 3D stuff so just sum the dif)
-        location->pose.position.x += rotated_pr_zyx[X_AXIS];
-        location->pose.position.y += rotated_pr_zyx[Y_AXIS];
-        location->pose.position.z += rotated_pr_zyx[Z_AXIS];
-
-        /* returning to the xyzw of OpenXR*/
-        location->pose.orientation.z = hand.v[Z_AXIS];
-        location->pose.orientation.y = hand.v[Y_AXIS];
-        location->pose.orientation.x = hand.v[X_AXIS];
-        location->pose.orientation.w = hand.w;
-
-        return ret;
+        location->pose.position.x = (float)pose.position[0];
+        location->pose.position.y = (float)pose.position[1];
+        location->pose.position.z = (float)pose.position[2];
+        location->pose.orientation.x = (float)pose.orientation[0];
+        location->pose.orientation.y = (float)pose.orientation[1];
+        location->pose.orientation.z = (float)pose.orientation[2];
+        location->pose.orientation.w = (float)pose.orientation[3];
       }
     }
-    // is this the position data of the right hand?
-    for (int c = 0; c < action_space_list_hand_right_cnt; c++)
-    {
-      if (space == action_space_list_hand_right[c])
-      {
-
-        Quaternion hand;
-
-        /* Library uses zyxw, openXR uses xyzw quaternions*/
-        hand.v[Z_AXIS] = location->pose.orientation.z;
-        hand.v[Y_AXIS] = location->pose.orientation.y;
-        hand.v[X_AXIS] = location->pose.orientation.x;
-        hand.w = location->pose.orientation.w;
-
-        // adding rotation offset
-        Quaternion rotation;
-        float rotation_zyx[3];
-        rotation_zyx[Z_AXIS] = offset_rotation_right_z;
-        rotation_zyx[Y_AXIS] = offset_rotation_right_y;
-        rotation_zyx[X_AXIS] = offset_rotation_right_x;
-        Quaternion_fromEulerZYX(rotation_zyx, &rotation); // quatertion with rotation offsets
-        Quaternion_multiply(&rotation, &hand, &hand);     // rotating the "real angle" with the added offset
-
-        float pr_zyx[3];         // the desired position offset
-        float rotated_pr_zyx[3]; // holds the "rotated" position offset
-        pr_zyx[X_AXIS] = offset_position_right_x;
-        pr_zyx[Y_AXIS] = offset_position_right_y;
-        pr_zyx[Z_AXIS] = offset_position_right_z;
-        Quaternion_rotate(&rotation, pr_zyx, rotated_pr_zyx); // do the rotation
-
-        // apply position offset (it is catesian 3D stuff so just sum the dif)
-        location->pose.position.x += rotated_pr_zyx[X_AXIS];
-        location->pose.position.y += rotated_pr_zyx[Y_AXIS];
-        location->pose.position.z += rotated_pr_zyx[Z_AXIS];
-
-        /* returning to the xyzw of OpenXR quaternions*/
-        location->pose.orientation.z = hand.v[Z_AXIS];
-        location->pose.orientation.y = hand.v[Y_AXIS];
-        location->pose.orientation.x = hand.v[X_AXIS];
-        location->pose.orientation.w = hand.w;
-
-        return ret;
-      }
-      // same
-    }
-
-    // log_message("@xrLocateSpace for something else: %lu",space);
   }
 
   // all other cases
@@ -1686,11 +1395,14 @@ XRAPI_ATTR XrResult XRAPI_CALL xrStringToPath(
               pathString,
               *path);
 
-  // store in a very dumb way the number equivalent of those
-  if (strcmp(pathString, "/user/hand/left") == 0)
-    id_user_hand_left = *path;
-  if (strcmp(pathString, "/user/hand/right") == 0)
-    id_user_hand_right = *path;
+  /*
+      remember what the path number means, so every other hook can name the
+      paths it is handed. the two hands are the spaces the offsets get
+      injected into, whatever controller shows up in them.
+  */
+  xrdev_note_path(*path, pathString);
+  if (strcmp(pathString, XRDEV_PATH_HAND_LEFT) == 0 || strcmp(pathString, XRDEV_PATH_HAND_RIGHT) == 0)
+    xrdev_note_subaction(*path, pathString);
 
   return ret;
 }
@@ -1710,6 +1422,29 @@ XRAPI_ATTR XrResult XRAPI_CALL xrSuggestInteractionProfileBindings(
     XrInstance instance,
     const XrInteractionProfileSuggestedBinding *suggestedBindings)
 {
+  if (suggestedBindings && suggestedBindings->countSuggestedBindings > 0)
+  {
+    /*
+        the profile tells the device model the exact controller model, and
+        the binding paths say which devices those bindings are for.
+    */
+    uint64_t bindings[64];
+    uint64_t actions[64];
+    int count = (int)suggestedBindings->countSuggestedBindings;
+    int c;
+
+    if (count > 64)
+      count = 64;
+
+    for (c = 0; c < count; c++)
+    {
+      bindings[c] = suggestedBindings->suggestedBindings[c].binding;
+      actions[c] = handle_id(suggestedBindings->suggestedBindings[c].action);
+    }
+
+    xrdev_note_profile(suggestedBindings->interactionProfile, bindings, actions, count);
+  }
+
   log_message("xrSuggestInteractionProfileBindings %d", rand() % 1000);
   return _xrSuggestInteractionProfileBindings(instance, suggestedBindings);
 }
@@ -1892,7 +1627,7 @@ int main()
   exit(0);
   */
 
-  launch_gui_thread(NULL);
+  xrui_launch(NULL);
 
   while (1)
   {

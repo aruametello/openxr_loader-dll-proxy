@@ -1,6 +1,6 @@
 # openxr_loader.dll proxy
 
-![screenshot](https://github.com/aruametello/openxr_loader-dll-proxy/blob/main/screenshot-2.png?raw=true)
+![screenshot](https://github.com/aruametello/openxr_loader-dll-proxy/blob/main/screenshot.png?raw=true)
 
 A proxy dll to Khronos openxr_loader.dll. (https://registry.khronos.org/OpenXR/specs/1.0/loader.html)
 
@@ -32,4 +32,14 @@ ideas that i desire to explore in the future:
 
 the precompiled binaries were made using msys2 mingw64-ucrt, but is likely that other compilers will work as well.
 
-the makefile has a target named "dll_release" that produces the desired, required dll file for the proxy.
+the makefile has a target named "dll_release" that produces the desired, required dll file for the proxy ("dll_debug" does the same with debug symbols).
+
+the interface is built on top of [CUI](https://github.com/yappologistic/CUI), which is vendored in third_party/ along with the Khronos openxr headers, so nothing external is needed to build.
+
+the offsets themselves are not tied to a specific controller: the model just tracks whatever the runtime maps into the "left hand" and "right hand" spaces, and the offsets get applied to those spaces. the interface shows the two spaces, and names the controller that is actually in them when the runtime tells us (interaction profile).
+
+to develop the interface without booting a vr game, the makefile can spawn it directly with a mocked session:
+
+* `ui` (alias for `ui_debug`, or `ui_release`) builds the standalone interface exe (src/ui_main.c + src/ui.c) in obj/Ui/.
+* `ui_run` builds it and opens the window (it stays open until closed; every click saves the config).
+* `ui_shot` builds it and renders a screenshot to obj/Ui/ui.png, then exits — handy for checking the layout in one go.

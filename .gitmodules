@@ -1,0 +1,6 @@
+[submodule "third_party/CUI"]
+	path = third_party/CUI
+	url = https://github.com/yappologistic/CUI.git
+[submodule "third_party/openxr-sdk"]
+	path = third_party/openxr-sdk
+	url = https://github.com/KhronosGroup/OpenXR-SDK.git

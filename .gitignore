@@ -1,3 +1,4 @@
 /obj
+/bin
 # written by the standalone UI targets (ui_run / ui_shot)
-ui_test_config.txt
+ui_test_config.json

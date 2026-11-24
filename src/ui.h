@@ -43,6 +43,8 @@ extern "C"
         int screenshot_frames;     /* frames to wait before the screenshot, 0 for 60 */
         int exit_after_ms;         /* close by itself, 0 to stay open */
         int simulate;              /* stand in for a session, for testing */
+        int tab;                   /* tab shown first: 0 offsets, 1 smoothing,
+                                    * 2 deadzones */
     } xrui_options;
 
     /* Blocks until the window is closed. Returns 0 when it ran fine. */

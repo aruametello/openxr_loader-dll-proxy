@@ -36,8 +36,10 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <io.h> /* _access: a missing config file is not an unreadable one */
 
 #include "Quaternion.h"
+#include "cJSON.h"
 
 #ifndef M_PI
 #define M_PI (3.14159265358979323846)
@@ -79,7 +81,7 @@
     char application[XRDEV_NAME_MAX];
     char runtime[XRDEV_NAME_MAX];
 
-    char config_path[XRDEV_PATH_MAX];
+    char config_path[XRDEV_PATH_FILE_MAX];
     int dirty;
     uint64_t last_save_ms;
 } xrdev_state;
@@ -101,6 +103,23 @@ static const xrdev_axis_info position_axes[XRDEV_AXIS_COUNT] = {
     {"Left / right", "X", "m", -0.5, 0.5, 0.1, 0.01},
     {"Up / down", "Y", "m", -0.5, 0.5, 0.1, 0.01},
     {"Forward / back", "Z", "m", -0.5, 0.5, 0.1, 0.01}};
+
+/* Thumb stick deadzones, in percent of full travel from none to all of it:
+ * one whole percent per click, no fine step. The unit of the value is what
+ * the interface shows. */
+static const xrdev_axis_info deadzone_axes[XRDEV_STICK_AXIS_COUNT] = {
+    {"Stick left / right", "X", "%", XRDEV_DEADZONE_MIN_PERCENT, XRDEV_DEADZONE_MAX_PERCENT, 1.0, 0.0},
+    {"Stick forward / back", "Y", "%", XRDEV_DEADZONE_MIN_PERCENT, XRDEV_DEADZONE_MAX_PERCENT, 1.0, 0.0}};
+
+static void smooth_store_scale(xrdev_smooth *sm, int which, double value);
+static void smooth_store_samples(xrdev_smooth *sm, int samples);
+static void smooth_store_strength(xrdev_smooth *sm, double strength);
+static void smooth_forget(uint64_t space);
+
+/* Only read by the UI. Position scale in metres, rotation scale in degrees. */
+static const xrdev_axis_info smooth_scale_axes[XRDEV_SMOOTH_COUNT] = {
+    {"Distance", "d", "m", 0.001, 0.1, 0.01, 0.001},
+    {"Angle", "a", "\xc2\xb0", 0.1, 20.0, 1.0, 0.1}};
 
     /* --------------------------------------------------------- utilities */
 
@@ -164,8 +183,20 @@ static int contains_ci(const char *haystack, const char *needle)
     return hit != NULL;
 }
 
+/* Copies a string into a fixed buffer, always terminating it and never
+ * writing past cap. Long input is cut short without ceremony: every caller
+ * here is storing a name, a path or a config key, where a shorter answer is
+ * better than no answer, and none of them can do anything useful with a
+ * truncation beyond ignoring it.
+ *
+ * Deliberately not strncpy(): it never NUL terminates when the source exactly
+ * fills the space (hence the manual byte above), it zero fills the rest of the
+ * destination for no reason, and -Wstringop-truncation reports the length
+ * clamping it is being asked to do as if it were a bug. */
 static void copy_text(char *dst, size_t cap, const char *src)
 {
+    size_t len;
+
     if (!dst || cap == 0)
         return;
     if (!src)
@@ -173,8 +204,12 @@ static void copy_text(char *dst, size_t cap, const char *src)
         dst[0] = 0;
         return;
     }
-    strncpy(dst, src, cap - 1);
-    dst[cap - 1] = 0;
+
+    len = strlen(src);
+    if (len > cap - 1)
+        len = cap - 1;
+    memcpy(dst, src, len);
+    dst[len] = 0;
 }
 
 double xrdev_deg2rad(double degrees)
@@ -485,6 +520,25 @@ static int device_lookup_by_path_nolock(const char *path)
     return -1;
 }
 
+/* Smoothing starts off, with settings that only touch tremor sized motion. */
+static void device_smooth_defaults(xrdev_device *d)
+{
+    d->smooth[XRDEV_SMOOTH_POSITION].enabled = 0;
+    d->smooth[XRDEV_SMOOTH_POSITION].samples = 3;
+    d->smooth[XRDEV_SMOOTH_POSITION].strength = 1.0;
+    d->smooth[XRDEV_SMOOTH_POSITION].scale = 0.005;
+    d->smooth[XRDEV_SMOOTH_ROTATION].enabled = 0;
+    d->smooth[XRDEV_SMOOTH_ROTATION].samples = 3;
+    d->smooth[XRDEV_SMOOTH_ROTATION].strength = 1.0;
+    d->smooth[XRDEV_SMOOTH_ROTATION].scale = xrdev_deg2rad(1.0);
+}
+
+/* Smoothing is for the controllers only, the headset is never touched. */
+static int device_smoothable(const xrdev_device *d)
+{
+    return ci_equal(d->path, XRDEV_PATH_HAND_LEFT) || ci_equal(d->path, XRDEV_PATH_HAND_RIGHT);
+}
+
 /* Caller holds the write lock. Creates the device when it is new. */
 static int device_observe(const char *path)
 {
@@ -511,6 +565,7 @@ static int device_observe(const char *path)
     xrdev_default_name(d->path, d->name, sizeof(d->name));
     d->kind = xrdev_kind_of(d->path, 0);
     d->seen = 1;
+    device_smooth_defaults(d);
     state.device_count++;
     state.generation++;
 
@@ -565,6 +620,14 @@ static void device_set_position_nolock(xrdev_device *d, int axis, double metres)
 {
     const xrdev_axis_info *info = xrdev_axis_position(axis);
     d->position[axis] = clampd(metres, info->min, info->max);
+}
+
+/* Caller holds the write lock. The interface and the config file state a
+ * deadzone in percent, the filter wants the fraction of full travel. */
+static void device_set_deadzone_pct_nolock(xrdev_device *d, int axis, double percent)
+{
+    const xrdev_axis_info *info = xrdev_axis_deadzone(axis);
+    d->deadzone[axis] = clampd(percent, info->min, info->max) / 100.0;
 }
 
 /* Legacy keys, so the file written by the previous version of this tool still
@@ -652,6 +715,26 @@ static void apply_section_key(xrdev_device *d, const char *key, const char *valu
         device_set_position_nolock(d, XRDEV_AXIS_Y, strtod(value, 0));
     else if (ci_equal(key, "position_z"))
         device_set_position_nolock(d, XRDEV_AXIS_Z, strtod(value, 0));
+    else if (ci_equal(key, "deadzone_x"))
+        device_set_deadzone_pct_nolock(d, XRDEV_STICK_X, strtod(value, 0));
+    else if (ci_equal(key, "deadzone_y"))
+        device_set_deadzone_pct_nolock(d, XRDEV_STICK_Y, strtod(value, 0));
+    else if (ci_equal(key, "smooth_position"))
+        d->smooth[XRDEV_SMOOTH_POSITION].enabled = strtol(value, 0, 10) != 0;
+    else if (ci_equal(key, "smooth_position_samples"))
+        smooth_store_samples(&d->smooth[XRDEV_SMOOTH_POSITION], (int)strtol(value, 0, 10));
+    else if (ci_equal(key, "smooth_position_scale"))
+        smooth_store_scale(&d->smooth[XRDEV_SMOOTH_POSITION], XRDEV_SMOOTH_POSITION, strtod(value, 0));
+    else if (ci_equal(key, "smooth_position_strength"))
+        smooth_store_strength(&d->smooth[XRDEV_SMOOTH_POSITION], strtod(value, 0));
+    else if (ci_equal(key, "smooth_rotation_strength"))
+        smooth_store_strength(&d->smooth[XRDEV_SMOOTH_ROTATION], strtod(value, 0));
+    else if (ci_equal(key, "smooth_rotation"))
+        d->smooth[XRDEV_SMOOTH_ROTATION].enabled = strtol(value, 0, 10) != 0;
+    else if (ci_equal(key, "smooth_rotation_samples"))
+        smooth_store_samples(&d->smooth[XRDEV_SMOOTH_ROTATION], (int)strtol(value, 0, 10));
+    else if (ci_equal(key, "smooth_rotation_scale"))
+        smooth_store_scale(&d->smooth[XRDEV_SMOOTH_ROTATION], XRDEV_SMOOTH_ROTATION, strtod(value, 0));
     else if (ci_equal(key, "name") && value[0])
         copy_text(d->name, sizeof(d->name), value);
     else if (ci_equal(key, "profile") && value[0])
@@ -661,30 +744,13 @@ static void apply_section_key(xrdev_device *d, const char *key, const char *valu
     }
 }
 
-int xrdev_load(const char *path)
+/* The text format of the previous versions: "key=value" lines and
+ * [device:...] sections. Read only, new files are written as JSON. */
+static int load_ini(FILE *arq)
 {
-    FILE *arq;
     char line[1024];
     xrdev_device *current = 0;
     int loaded = 0;
-
-    if (!path || !path[0])
-        return 0;
-
-    arq = fopen(path, "r");
-    if (!arq)
-    {
-        xrdev_log("Could not find my config file at:%s!\n We are trying to run with default offsets now(all zeroes)\n", path);
-        wr_begin();
-        copy_text(state.config_path, sizeof(state.config_path), path);
-        wr_end();
-        xrdev_save(path);
-        return 0;
-    }
-
-    wr_begin();
-    copy_text(state.config_path, sizeof(state.config_path), path);
-    wr_end();
 
     while (fgets(line, sizeof(line), arq) != NULL)
     {
@@ -764,19 +830,363 @@ int xrdev_load(const char *path)
         wr_end();
     }
 
+    return loaded;
+}
+
+/* Reads a number out of a JSON object, returns 0 when it is missing. */
+static int json_number(const cJSON *object, const char *name, double *out)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+
+    if (!cJSON_IsNumber(item))
+        return 0;
+    *out = item->valuedouble;
+    return 1;
+}
+
+static int json_flag(const cJSON *object, const char *name, int *out)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+
+    if (cJSON_IsBool(item))
+        *out = cJSON_IsTrue(item) ? 1 : 0;
+    else if (cJSON_IsNumber(item))
+        *out = item->valuedouble != 0.0;
+    else
+        return 0;
+    return 1;
+}
+
+/* "rotation": {"x":..,"y":..,"z":..}, degrees; "position": metres. */
+static int json_apply_axes(xrdev_device *d, const cJSON *object, int rotation)
+{
+    static const char *const names[XRDEV_AXIS_COUNT] = {"x", "y", "z"};
+    int axis;
+    int count = 0;
+
+    if (!cJSON_IsObject(object))
+        return 0;
+    for (axis = 0; axis < XRDEV_AXIS_COUNT; axis++)
+    {
+        double value;
+        if (!json_number(object, names[axis], &value))
+            continue;
+        if (rotation)
+            device_set_rotation_deg_nolock(d, axis, value);
+        else
+            device_set_position_nolock(d, axis, value);
+        count++;
+    }
+    return count;
+}
+
+/* "deadzone": {"x":..,"y":..}, percent of full travel like the interface. */
+static int json_apply_deadzone(xrdev_device *d, const cJSON *object)
+{
+    static const char *const names[XRDEV_STICK_AXIS_COUNT] = {"x", "y"};
+    int axis;
+    int count = 0;
+
+    if (!cJSON_IsObject(object))
+        return 0;
+    for (axis = 0; axis < XRDEV_STICK_AXIS_COUNT; axis++)
+    {
+        double value;
+        if (!json_number(object, names[axis], &value))
+            continue;
+        device_set_deadzone_pct_nolock(d, axis, value);
+        count++;
+    }
+    return count;
+}
+
+/* One of the two smoothing blocks. `scale` is metres or degrees. */
+static int json_apply_smooth(xrdev_device *d, const cJSON *object, int which)
+{
+    xrdev_smooth *sm = &d->smooth[which];
+    double value;
+    int flag;
+    int count = 0;
+
+    if (!cJSON_IsObject(object))
+        return 0;
+    if (json_flag(object, "enabled", &flag))
+    {
+        sm->enabled = flag;
+        count++;
+    }
+    if (json_number(object, "samples", &value))
+    {
+        smooth_store_samples(sm, (int)value);
+        count++;
+    }
+    if (json_number(object, "strength", &value))
+    {
+        smooth_store_strength(sm, value);
+        count++;
+    }
+    if (json_number(object, "scale", &value))
+    {
+        smooth_store_scale(sm, which, value);
+        count++;
+    }
+    return count;
+}
+
+static int load_json(const char *text, size_t length)
+{
+    cJSON *root = cJSON_ParseWithLength(text, length);
+    const cJSON *devices;
+    const cJSON *entry;
+    int loaded = 0;
+
+    if (!root)
+    {
+        const char *where = cJSON_GetErrorPtr();
+        xrdev_log("Config file is not valid JSON (near byte %d), keeping the defaults.",
+                  where ? (int)(where - text) : 0);
+        return 0;
+    }
+
+    devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
+    cJSON_ArrayForEach(entry, devices)
+    {
+        const cJSON *path = cJSON_GetObjectItemCaseSensitive(entry, "path");
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(entry, "name");
+        const cJSON *profile = cJSON_GetObjectItemCaseSensitive(entry, "profile");
+        const cJSON *smoothing = cJSON_GetObjectItemCaseSensitive(entry, "smoothing");
+        xrdev_device *d;
+        int index;
+        int flag;
+
+        if (!cJSON_IsString(path) || !path->valuestring[0])
+            continue;
+
+        wr_begin();
+        index = device_observe(path->valuestring);
+        if (index < 0)
+        {
+            wr_end();
+            continue;
+        }
+        d = &state.devices[index];
+
+        if (cJSON_IsString(name) && name->valuestring[0])
+            copy_text(d->name, sizeof(d->name), name->valuestring);
+        if (cJSON_IsString(profile) && profile->valuestring[0])
+        {
+            copy_text(d->profile, sizeof(d->profile), profile->valuestring);
+            d->kind = xrdev_kind_of(d->path, d->profile);
+        }
+        if (json_flag(entry, "enabled", &flag))
+            d->enabled = flag;
+        loaded += json_apply_axes(d, cJSON_GetObjectItemCaseSensitive(entry, "rotation"), 1);
+        loaded += json_apply_axes(d, cJSON_GetObjectItemCaseSensitive(entry, "position"), 0);
+        loaded += json_apply_deadzone(d, cJSON_GetObjectItemCaseSensitive(entry, "deadzone"));
+        if (cJSON_IsObject(smoothing))
+        {
+            loaded += json_apply_smooth(d, cJSON_GetObjectItemCaseSensitive(smoothing, "position"),
+                                        XRDEV_SMOOTH_POSITION);
+            loaded += json_apply_smooth(d, cJSON_GetObjectItemCaseSensitive(smoothing, "rotation"),
+                                        XRDEV_SMOOTH_ROTATION);
+        }
+        wr_end();
+    }
+
+    cJSON_Delete(root);
+    return loaded;
+}
+
+/* "x.json" -> "x.txt", the name the previous versions used. */
+static int legacy_twin_path(const char *path, char *out, size_t cap)
+{
+    size_t len = strlen(path);
+
+    if (len < 6 || len + 1 > cap || _stricmp(path + len - 5, ".json") != 0)
+        return 0;
+    memcpy(out, path, len - 5);
+    memcpy(out + len - 5, ".txt", 5);
+    return 1;
+}
+
+int xrdev_load(const char *path)
+{
+    FILE *arq;
+    char twin[XRDEV_PATH_FILE_MAX];
+    int migrate = 0;
+    int loaded;
+    char *text;
+    long size;
+
+    if (!path || !path[0])
+        return 0;
+
+    arq = fopen(path, "rb");
+    if (!arq && legacy_twin_path(path, twin, sizeof(twin)))
+    {
+        /* No JSON yet, but the old .txt is there: read it, write JSON. */
+        arq = fopen(twin, "rb");
+        migrate = arq != NULL;
+    }
+    if (!arq)
+    {
+        /*
+            "Could not open" is not the same as "does not exist", and the two
+            must not be treated the same way: what follows writes the file,
+            which would replace the saved offsets of anyone whose config
+            merely could not be read this once (an antivirus holding it open,
+            a second game instance, a read only share, a permissions problem).
+            Defaults are only ever written when the file provably is absent.
+        */
+        if (_access(path, 0) == 0)
+        {
+            xrdev_log("The config file at %s exists but could not be opened (locked, or no permission). It is being left alone and this session runs with zero offsets.\n", path);
+            return 0;
+        }
+
+        xrdev_log("Could not find my config file at:%s!\n We are trying to run with default offsets now(all zeroes)\n", path);
+        wr_begin();
+        copy_text(state.config_path, sizeof(state.config_path), path);
+        wr_end();
+        xrdev_save(path);
+        return 0;
+    }
+
+    wr_begin();
+    copy_text(state.config_path, sizeof(state.config_path), path);
+    wr_end();
+
+    fseek(arq, 0, SEEK_END);
+    size = ftell(arq);
+    fseek(arq, 0, SEEK_SET);
+    text = size >= 0 ? (char *)malloc((size_t)size + 1) : NULL;
+    if (!text)
+    {
+        fclose(arq);
+        xrdev_log("Could not read my config file at:%s!", path);
+        return 0;
+    }
+    size = (long)fread(text, 1, (size_t)size, arq);
+    text[size] = 0;
+
+    {
+        /* JSON starts with a brace (after an optional byte order mark),
+         * the old format never does: it begins with a comment or a key. */
+        const char *first = text;
+        if (size >= 3 && (unsigned char)first[0] == 0xEF && (unsigned char)first[1] == 0xBB && (unsigned char)first[2] == 0xBF)
+            first += 3;
+        while (*first && isspace((unsigned char)*first))
+            first++;
+
+        if (*first == '{')
+            loaded = load_json(first, (size_t)(size - (first - text)));
+        else
+        {
+            rewind(arq);
+            loaded = load_ini(arq);
+        }
+    }
+
+    free(text);
     fclose(arq);
 
     wr_begin();
     state.dirty = 0;
     wr_end();
 
-    xrdev_log("read configuration file from: %s (%d values, %d devices)", path, loaded, xrdev_device_count());
+    xrdev_log("read configuration file from: %s (%d values, %d devices)", migrate ? twin : path, loaded, xrdev_device_count());
+
+    if (migrate)
+    {
+        xrdev_log("converted %s to JSON at %s", twin, path);
+        xrdev_save(path);
+    }
     return loaded;
+}
+
+/* Seven decimals is plenty for degrees and metres, and keeps the file free of
+ * 5.1566200000000002 noise from the radian round trip. */
+static double round7(double v)
+{
+    return floor(v * 1e7 + 0.5) / 1e7;
+}
+
+static cJSON *json_axes(const double values[XRDEV_AXIS_COUNT], int degrees)
+{
+    static const char *const names[XRDEV_AXIS_COUNT] = {"x", "y", "z"};
+    cJSON *object = cJSON_CreateObject();
+    int axis;
+
+    if (!object)
+        return NULL;
+    for (axis = 0; axis < XRDEV_AXIS_COUNT; axis++)
+        cJSON_AddNumberToObject(object, names[axis],
+                                round7(degrees ? xrdev_rad2deg(values[axis]) : values[axis]));
+    return object;
+}
+
+/* "deadzone": {"x":..,"y":..}, percent like the interface shows it. */
+static cJSON *json_deadzone(const double deadzone[XRDEV_STICK_AXIS_COUNT])
+{
+    static const char *const names[XRDEV_STICK_AXIS_COUNT] = {"x", "y"};
+    cJSON *object = cJSON_CreateObject();
+    int axis;
+
+    if (!object)
+        return NULL;
+    for (axis = 0; axis < XRDEV_STICK_AXIS_COUNT; axis++)
+        cJSON_AddNumberToObject(object, names[axis], round7(deadzone[axis] * 100.0));
+    return object;
+}
+
+static cJSON *json_smooth(const xrdev_smooth *sm, int which)
+{
+    cJSON *object = cJSON_CreateObject();
+
+    if (!object)
+        return NULL;
+    cJSON_AddBoolToObject(object, "enabled", sm->enabled != 0);
+    cJSON_AddNumberToObject(object, "samples", sm->samples);
+    cJSON_AddNumberToObject(object, "strength", round7(sm->strength));
+    /* metres for position, degrees for rotation, like the interface shows */
+    cJSON_AddNumberToObject(object, "scale",
+                            round7(which == XRDEV_SMOOTH_ROTATION ? xrdev_rad2deg(sm->scale) : sm->scale));
+    return object;
+}
+
+/* Caller holds the read lock. */
+static cJSON *json_device(const xrdev_device *d)
+{
+    cJSON *object = cJSON_CreateObject();
+
+    if (!object)
+        return NULL;
+    cJSON_AddStringToObject(object, "path", d->path);
+    cJSON_AddStringToObject(object, "name", d->name);
+    if (d->profile[0])
+        cJSON_AddStringToObject(object, "profile", d->profile);
+    cJSON_AddBoolToObject(object, "enabled", d->enabled != 0);
+    cJSON_AddItemToObject(object, "rotation", json_axes(d->rotation, 1));
+    cJSON_AddItemToObject(object, "position", json_axes(d->position, 0));
+    cJSON_AddItemToObject(object, "deadzone", json_deadzone(d->deadzone));
+    if (device_smoothable(d))
+    {
+        cJSON *smoothing = cJSON_AddObjectToObject(object, "smoothing");
+        if (smoothing)
+        {
+            cJSON_AddItemToObject(smoothing, "position", json_smooth(&d->smooth[XRDEV_SMOOTH_POSITION], XRDEV_SMOOTH_POSITION));
+            cJSON_AddItemToObject(smoothing, "rotation", json_smooth(&d->smooth[XRDEV_SMOOTH_ROTATION], XRDEV_SMOOTH_ROTATION));
+        }
+    }
+    return object;
 }
 
 int xrdev_save(const char *path)
 {
     FILE *arq;
+    cJSON *root;
+    cJSON *devices;
+    char *text;
     int i;
 
     if (!path || !path[0])
@@ -784,73 +1194,55 @@ int xrdev_save(const char *path)
     if (!path || !path[0])
         return 0;
 
-    arq = fopen(path, "w");
-    if (!arq)
+    root = cJSON_CreateObject();
+    if (root)
+        cJSON_AddNumberToObject(root, "version", 2);
+    devices = root ? cJSON_AddArrayToObject(root, "devices") : NULL;
+    if (!devices)
     {
-        xrdev_log("Could not write my config file to:%s!", path);
+        cJSON_Delete(root);
+        xrdev_log("Out of memory while writing my config file to:%s!", path);
         return 0;
     }
 
-    fprintf(arq, "#\n");
-    fprintf(arq, "# configuration file for controller offsets in OpenXR\n");
-    fprintf(arq, "#\n");
-    fprintf(arq, "# One [device:...] section per device, named after its OpenXR\n");
-    fprintf(arq, "# subaction path. Rotation is written in degrees, position in metres.\n");
-    fprintf(arq, "#\n");
-    fprintf(arq, "#   rotation_x = \"up/down\" angle\n");
-    fprintf(arq, "#   rotation_y = \"left/right\" angle\n");
-    fprintf(arq, "#   rotation_z = \"twist\" angle\n");
-    fprintf(arq, "#\n");
-    fprintf(arq, "# Anything you add by hand survives as long as it is a comment.\n");
-    fprintf(arq, "#\n");
-
+    /* Rotation is written in degrees, position in metres; x is the
+     * "up/down" angle, y "left/right", z the "twist". Deadzones are written
+     * in percent of the stick's full travel. Smoothing exists for
+     * the two hands only: strength 0.0 is raw, 1.0 fully smoothed, samples
+     * 1 to 5 (the newest counts), scale is the distance at which an older
+     * sample weighs half (metres for position, degrees for rotation). */
     rd_begin();
-
     for (i = 0; i < state.device_count; i++)
     {
         const xrdev_device *d = &state.devices[i];
+        cJSON *entry;
         if (!d->in_use)
             continue;
-
-        fprintf(arq, "\n[device:%s]\n", d->path);
-        fprintf(arq, "name=%s\n", d->name);
-        if (d->profile[0])
-            fprintf(arq, "profile=%s\n", d->profile);
-        fprintf(arq, "enabled=%d\n", d->enabled ? 1 : 0);
-        fprintf(arq, "rotation_x=%.7f\n", xrdev_rad2deg(d->rotation[XRDEV_AXIS_X]));
-        fprintf(arq, "rotation_y=%.7f\n", xrdev_rad2deg(d->rotation[XRDEV_AXIS_Y]));
-        fprintf(arq, "rotation_z=%.7f\n", xrdev_rad2deg(d->rotation[XRDEV_AXIS_Z]));
-        fprintf(arq, "position_x=%.7f\n", d->position[XRDEV_AXIS_X]);
-        fprintf(arq, "position_y=%.7f\n", d->position[XRDEV_AXIS_Y]);
-        fprintf(arq, "position_z=%.7f\n", d->position[XRDEV_AXIS_Z]);
+        entry = json_device(d);
+        if (entry)
+            cJSON_AddItemToArray(devices, entry);
     }
-
-    /* Kept so an older copy of the loader still understands this file. */
-    for (i = 0; i < state.device_count; i++)
-    {
-        const xrdev_device *d = &state.devices[i];
-        const char *tag = 0;
-        if (!d->in_use || !d->builtin)
-            continue;
-        if (ci_equal(d->path, XRDEV_PATH_HAND_LEFT))
-            tag = "left_hand";
-        else if (ci_equal(d->path, XRDEV_PATH_HAND_RIGHT))
-            tag = "right_hand";
-        if (!tag)
-            continue;
-
-        fprintf(arq, "\n#legacy %s values\n", tag);
-        fprintf(arq, "%s_rotation_offset_x=%.7f\n", tag, xrdev_rad2deg(d->rotation[XRDEV_AXIS_X]));
-        fprintf(arq, "%s_rotation_offset_y=%.7f\n", tag, xrdev_rad2deg(d->rotation[XRDEV_AXIS_Y]));
-        fprintf(arq, "%s_rotation_offset_z=%.7f\n", tag, xrdev_rad2deg(d->rotation[XRDEV_AXIS_Z]));
-        fprintf(arq, "%s_position_offset_x=%.7f\n", tag, d->position[XRDEV_AXIS_X]);
-        fprintf(arq, "%s_position_offset_y=%.7f\n", tag, d->position[XRDEV_AXIS_Y]);
-        fprintf(arq, "%s_position_offset_z=%.7f\n", tag, d->position[XRDEV_AXIS_Z]);
-    }
-
     rd_end();
 
+    text = cJSON_Print(root);
+    cJSON_Delete(root);
+    if (!text)
+    {
+        xrdev_log("Out of memory while writing my config file to:%s!", path);
+        return 0;
+    }
+
+    arq = fopen(path, "wb");
+    if (!arq)
+    {
+        cJSON_free(text);
+        xrdev_log("Could not write my config file to:%s!", path);
+        return 0;
+    }
+    fputs(text, arq);
+    fputc('\n', arq);
     fclose(arq);
+    cJSON_free(text);
 
     wr_begin();
     state.dirty = 0;
@@ -960,6 +1352,13 @@ const xrdev_axis_info *xrdev_axis_position(int axis)
     return &position_axes[axis];
 }
 
+const xrdev_axis_info *xrdev_axis_deadzone(int axis)
+{
+    if (axis < 0 || axis >= XRDEV_STICK_AXIS_COUNT)
+        axis = 0;
+    return &deadzone_axes[axis];
+}
+
     /* ------------------------------------------------------------ editing */
 
     static int edit_device(int index, int *changed_out)
@@ -1017,6 +1416,31 @@ int xrdev_nudge_position(int index, int axis, double metres)
     if (!xrdev_get(index, &d))
         return 0;
     return xrdev_set_position(index, axis, d.position[axis] + metres);
+}
+
+int xrdev_set_deadzone(int index, int axis, double percent)
+{
+    int changed = 0;
+    if (axis < 0 || axis >= XRDEV_STICK_AXIS_COUNT)
+        return 0;
+    wr_begin();
+    if (edit_device(index, &changed))
+    {
+        device_set_deadzone_pct_nolock(&state.devices[index], axis, percent);
+        state.dirty = 1;
+    }
+    wr_end();
+    return changed;
+}
+
+int xrdev_nudge_deadzone(int index, int axis, double percent)
+{
+    xrdev_device d;
+    if (axis < 0 || axis >= XRDEV_STICK_AXIS_COUNT)
+        return 0;
+    if (!xrdev_get(index, &d))
+        return 0;
+    return xrdev_set_deadzone(index, axis, d.deadzone[axis] * 100.0 + percent);
 }
 
 int xrdev_set_enabled(int index, int enabled)
@@ -1096,6 +1520,110 @@ int xrdev_mirror(int src_index, int dst_index, int mirror_yaw)
     }
     wr_end();
     return changed;
+}
+
+const xrdev_axis_info *xrdev_smooth_scale_info(int which)
+{
+    if (which < 0 || which >= XRDEV_SMOOTH_COUNT)
+        which = 0;
+    return &smooth_scale_axes[which];
+}
+
+/* Caller holds the write lock. NULL unless the device may be smoothed. */
+static xrdev_smooth *smooth_target(int index, int which)
+{
+    if (which < 0 || which >= XRDEV_SMOOTH_COUNT)
+        return 0;
+    if (index < 0 || index >= state.device_count || !state.devices[index].in_use)
+        return 0;
+    if (!device_smoothable(&state.devices[index]))
+        return 0;
+    return &state.devices[index].smooth[which];
+}
+
+static void smooth_store_scale(xrdev_smooth *sm, int which, double value)
+{
+    const xrdev_axis_info *info = &smooth_scale_axes[which];
+    value = clampd(value, info->min, info->max);
+    sm->scale = which == XRDEV_SMOOTH_ROTATION ? xrdev_deg2rad(value) : value;
+}
+
+static void smooth_store_strength(xrdev_smooth *sm, double strength)
+{
+    sm->strength = clampd(strength, 0.0, 1.0);
+}
+
+static void smooth_store_samples(xrdev_smooth *sm, int samples)
+{
+    if (samples < XRDEV_SMOOTH_MIN_SAMPLES)
+        samples = XRDEV_SMOOTH_MIN_SAMPLES;
+    if (samples > XRDEV_SMOOTH_MAX_SAMPLES)
+        samples = XRDEV_SMOOTH_MAX_SAMPLES;
+    sm->samples = samples;
+}
+
+int xrdev_set_smooth_enabled(int index, int which, int enabled)
+{
+    xrdev_smooth *sm;
+    int ok = 0;
+    wr_begin();
+    sm = smooth_target(index, which);
+    if (sm)
+    {
+        sm->enabled = enabled ? 1 : 0;
+        state.dirty = 1;
+        ok = 1;
+    }
+    wr_end();
+    return ok;
+}
+
+int xrdev_set_smooth_samples(int index, int which, int samples)
+{
+    xrdev_smooth *sm;
+    int ok = 0;
+    wr_begin();
+    sm = smooth_target(index, which);
+    if (sm)
+    {
+        smooth_store_samples(sm, samples);
+        state.dirty = 1;
+        ok = 1;
+    }
+    wr_end();
+    return ok;
+}
+
+int xrdev_set_smooth_strength(int index, int which, double strength)
+{
+    xrdev_smooth *sm;
+    int ok = 0;
+    wr_begin();
+    sm = smooth_target(index, which);
+    if (sm)
+    {
+        smooth_store_strength(sm, strength);
+        state.dirty = 1;
+        ok = 1;
+    }
+    wr_end();
+    return ok;
+}
+
+int xrdev_set_smooth_scale(int index, int which, double scale)
+{
+    xrdev_smooth *sm;
+    int ok = 0;
+    wr_begin();
+    sm = smooth_target(index, which);
+    if (sm)
+    {
+        smooth_store_scale(sm, which, scale);
+        state.dirty = 1;
+        ok = 1;
+    }
+    wr_end();
+    return ok;
 }
 
 int xrdev_set_name(int index, const char *name)
@@ -1505,6 +2033,7 @@ int xrdev_note_action_space(uint64_t space, uint64_t subaction_path, uint64_t ac
 void xrdev_forget_space(uint64_t space)
 {
     int i, j;
+    smooth_forget(space);
     wr_begin();
     for (i = 0; i < state.device_count; i++)
     {
@@ -1561,8 +2090,25 @@ int xrdev_index_of_space(uint64_t space)
     return 1;
 }
 
+/* Back onto the unit sphere. Quaternion_rotate() is a rotation only for unit
+ * quaternions: give it one of length 1.3 and it scales the vector it turns by
+ * 1.3 squared, so a 0.1 m offset quietly becomes 0.169 m. Runtimes do hand
+ * back slightly off quaternions, and wildly off ones for poses they are not
+ * sure about, so every orientation taken from a pose is put through this. */
+static void quaternion_force_unit(Quaternion *q)
+{
+    float len = Quaternion_norm(q);
+
+    if (len > 1e-6f && len != 1.0f)
+    {
+        Quaternion unit;
+        Quaternion_normalize(q, &unit);
+        *q = unit;
+    }
+}
+
 /* Caller holds a lock that allows writing to *pose. */
-static void inject(const xrdev_device *d, xrdev_pose *pose)
+static void inject(const xrdev_device *d, int orientation_valid, xrdev_pose *pose)
 {
     Quaternion hand;
     Quaternion rotation;
@@ -1582,6 +2128,12 @@ static void inject(const xrdev_device *d, xrdev_pose *pose)
     hand.v[2] = (float)pose->orientation[XRDEV_AXIS_Z];
     hand.w = (float)pose->orientation[3];
 
+    /* Only a pose the runtime swears is tracked can be trusted to turn
+     * anything. For an untracked one the orientation is a guess (often an
+     * exact identity, sometimes stale, and not always unit length). */
+    if (orientation_valid)
+        quaternion_force_unit(&hand);
+
     /* fromEulerZYX takes [roll about x, pitch about y, yaw about z] and builds
      * Qz(yaw) * Qy(pitch) * Qx(roll). */
     euler[0] = (float)d->rotation[XRDEV_AXIS_X];
@@ -1598,9 +2150,23 @@ static void inject(const xrdev_device *d, xrdev_pose *pose)
     offset[0] = (float)d->position[XRDEV_AXIS_X];
     offset[1] = (float)d->position[XRDEV_AXIS_Y];
     offset[2] = (float)d->position[XRDEV_AXIS_Z];
-    Quaternion_rotate(&hand, offset, shifted);
+
+    if (orientation_valid)
+        Quaternion_rotate(&hand, offset, shifted);
+    else
+    {
+        /* Nothing trustworthy to turn the offset by. Adding it along the base
+         * space's own axes is the least wrong answer: it keeps the length the
+         * user asked for instead of pointing it along a stale or invented
+         * orientation. (The pose is flagged untracked anyway, so a well
+         * behaved application never looks at the result.) */
+        shifted[0] = offset[0];
+        shifted[1] = offset[1];
+        shifted[2] = offset[2];
+    }
 
     Quaternion_multiply(&hand, &rotation, &result);
+    quaternion_force_unit(&result);
 
     pose->position[XRDEV_AXIS_X] += shifted[0];
     pose->position[XRDEV_AXIS_Y] += shifted[1];
@@ -1612,12 +2178,210 @@ static void inject(const xrdev_device *d, xrdev_pose *pose)
     pose->orientation[3] = result.w;
 }
 
-int xrdev_apply_offset(uint64_t space, xrdev_pose *pose)
+/* ---------------------------------------------------------- smoothing */
+
+/* The last few raw poses of one pose stream, a stream being one action space
+ * located against one base space. Raw means before the offsets, so changing an
+ * offset while playing never leaves the history pointing somewhere else. */
+typedef struct smooth_slot
+{
+    uint64_t space;
+    uint64_t base;
+    int64_t last_time;
+    int count; /* samples held, newest first */
+    double position[XRDEV_SMOOTH_MAX_SAMPLES][3];
+    double orientation[XRDEV_SMOOTH_MAX_SAMPLES][4]; /* x y z w */
+} smooth_slot;
+
+#define SMOOTH_SLOTS 64
+/* A gap this long (ns) means the history is about something else now. */
+#define SMOOTH_MAX_GAP_NS 250000000LL
+
+static SRWLOCK smooth_lock; /* zeroed == SRWLOCK_INIT, like state.lock */
+static smooth_slot smooth_slots[SMOOTH_SLOTS];
+static int smooth_next_victim;
+
+/* Caller holds smooth_lock. */
+static smooth_slot *smooth_slot_for(uint64_t space, uint64_t base)
+{
+    int i;
+    smooth_slot *free_slot = 0;
+
+    for (i = 0; i < SMOOTH_SLOTS; i++)
+    {
+        if (smooth_slots[i].space == space && smooth_slots[i].base == base)
+            return &smooth_slots[i];
+        if (!free_slot && smooth_slots[i].space == 0)
+            free_slot = &smooth_slots[i];
+    }
+
+    if (!free_slot)
+    {
+        free_slot = &smooth_slots[smooth_next_victim];
+        smooth_next_victim = (smooth_next_victim + 1) % SMOOTH_SLOTS;
+    }
+
+    memset(free_slot, 0, sizeof(*free_slot));
+    free_slot->space = space;
+    free_slot->base = base;
+    return free_slot;
+}
+
+static void smooth_forget(uint64_t space)
+{
+    int i;
+    AcquireSRWLockExclusive(&smooth_lock);
+    for (i = 0; i < SMOOTH_SLOTS; i++)
+    {
+        if (smooth_slots[i].space == space)
+            memset(&smooth_slots[i], 0, sizeof(smooth_slots[i]));
+    }
+    ReleaseSRWLockExclusive(&smooth_lock);
+}
+
+/* Angle between two orientations, radians, 0..pi. */
+static double orientation_distance(const double *a, const double *b)
+{
+    double dot = fabs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    if (dot > 1.0)
+        dot = 1.0;
+    return 2.0 * acos(dot);
+}
+
+/* The newest sample counts 1.0. An older one counts 1 / (1 + (d / scale)^2):
+ * 1.0 when it sits on the newest, 0.5 at `scale`, 0.1 at three times that.
+ * The weight depends on the distance to the newest sample only, so a fast
+ * movement (everything old is far away) answers with the raw pose at once.
+ *
+ * On top of that sample number `i` of `n` is scaled by (n - i) / n, so the
+ * older, the less it counts, even with a hand that does not move at all.
+ * The weighted mean is then mixed with the newest raw sample by `strength`. */
+static double smooth_weight(double distance, double scale)
+{
+    double r = distance / scale;
+    return 1.0 / (1.0 + r * r);
+}
+
+/* Caller holds smooth_lock. Updates the history with the raw pose and
+ * rewrites *pose with the smoothed one. */
+static void smooth_pose(const xrdev_device *d, uint64_t space, uint64_t base,
+                        int64_t time, int position_valid, int orientation_valid,
+                        xrdev_pose *pose)
+{
+    const xrdev_smooth *sp = &d->smooth[XRDEV_SMOOTH_POSITION];
+    const xrdev_smooth *sr = &d->smooth[XRDEV_SMOOTH_ROTATION];
+    smooth_slot *slot = smooth_slot_for(space, base);
+    int i, k;
+
+    /* Not tracked: nothing to smooth, and what came before is stale. */
+    if (!position_valid || !orientation_valid)
+    {
+        slot->count = 0;
+        return;
+    }
+
+    if (slot->count > 0)
+    {
+        if (time < slot->last_time)
+            return; /* a query about the past, leave the stream alone */
+        if (time - slot->last_time > SMOOTH_MAX_GAP_NS)
+            slot->count = 0;
+    }
+
+    /* Same instant asked again: replace the newest and keep the rest, so the
+     * answer is the same every time the game asks. */
+    if (!(slot->count > 0 && time == slot->last_time))
+    {
+        for (i = XRDEV_SMOOTH_MAX_SAMPLES - 1; i > 0; i--)
+        {
+            memcpy(slot->position[i], slot->position[i - 1], sizeof(slot->position[i]));
+            memcpy(slot->orientation[i], slot->orientation[i - 1], sizeof(slot->orientation[i]));
+        }
+        if (slot->count < XRDEV_SMOOTH_MAX_SAMPLES)
+            slot->count++;
+        slot->last_time = time;
+    }
+
+    memcpy(slot->position[0], pose->position, sizeof(slot->position[0]));
+    memcpy(slot->orientation[0], pose->orientation, sizeof(slot->orientation[0]));
+
+    if (sp->enabled && sp->samples > 1 && slot->count > 1)
+    {
+        double sum[3] = {slot->position[0][0], slot->position[0][1], slot->position[0][2]};
+        double total = 1.0;
+        int n = sp->samples < slot->count ? sp->samples : slot->count;
+
+        for (i = 1; i < n; i++)
+        {
+            double dx = slot->position[i][0] - slot->position[0][0];
+            double dy = slot->position[i][1] - slot->position[0][1];
+            double dz = slot->position[i][2] - slot->position[0][2];
+            double w = smooth_weight(sqrt(dx * dx + dy * dy + dz * dz), sp->scale) *
+                       (double)(n - i) / (double)n;
+
+            for (k = 0; k < 3; k++)
+                sum[k] += w * slot->position[i][k];
+            total += w;
+        }
+        for (k = 0; k < 3; k++)
+            pose->position[k] = slot->position[0][k] +
+                                sp->strength * (sum[k] / total - slot->position[0][k]);
+    }
+
+    if (sr->enabled && sr->samples > 1 && slot->count > 1)
+    {
+        const double *q0 = slot->orientation[0];
+        double sum[4] = {q0[0], q0[1], q0[2], q0[3]};
+        double len;
+        int n = sr->samples < slot->count ? sr->samples : slot->count;
+
+        for (i = 1; i < n; i++)
+        {
+            const double *q = slot->orientation[i];
+            double w = smooth_weight(orientation_distance(q0, q), sr->scale) *
+                       (double)(n - i) / (double)n;
+            /* q and -q are the same rotation: add the one on q0's side. */
+            double side = (q0[0] * q[0] + q0[1] * q[1] + q0[2] * q[2] + q0[3] * q[3]) < 0.0 ? -1.0 : 1.0;
+
+            for (k = 0; k < 4; k++)
+                sum[k] += w * side * q[k];
+        }
+
+        len = sqrt(sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2] + sum[3] * sum[3]);
+        if (len > 1e-9)
+        {
+            /* the weighted mean (normalised) mixed with the newest sample */
+            double mix[4];
+            double mlen;
+
+            for (k = 0; k < 4; k++)
+                mix[k] = q0[k] + sr->strength * (sum[k] / len - q0[k]);
+            mlen = sqrt(mix[0] * mix[0] + mix[1] * mix[1] + mix[2] * mix[2] + mix[3] * mix[3]);
+            if (mlen > 1e-9)
+            {
+                for (k = 0; k < 4; k++)
+                    pose->orientation[k] = mix[k] / mlen;
+            }
+        }
+    }
+}
+
+int xrdev_apply_offset(uint64_t space, uint64_t base_space, int64_t time,
+                       int position_valid, int orientation_valid, xrdev_pose *pose)
 {
     int i, j;
     int applied = 0;
 
     if (!pose || space == 0)
+        return 0;
+
+    /* A space asked about against itself. The honest answer is the identity
+     * pose, and an offset is precisely the wrong thing to add to that: it
+     * would tell a game that its own controller sits `position` metres away
+     * from itself, turned by `rotation`. (An offset here describes where one
+     * endpoint sits; a locate between two offset devices would need the base
+     * device's offset undone as well, which is not what this injects.) */
+    if (space == base_space)
         return 0;
 
     rd_begin();
@@ -1638,9 +2402,21 @@ int xrdev_apply_offset(uint64_t space, xrdev_pose *pose)
              * it is counted without asking for the exclusive lock. */
             d->locate_count++;
 
+            /* Smoothing first, on the raw pose. Hands only: the headset is
+             * not an action space and never gets here, and device_smoothable
+             * keeps trackers and anything else out as well. */
+            if (device_smoothable(d) && (d->smooth[XRDEV_SMOOTH_POSITION].enabled ||
+                                         d->smooth[XRDEV_SMOOTH_ROTATION].enabled))
+            {
+                AcquireSRWLockExclusive(&smooth_lock);
+                smooth_pose(d, space, base_space, time, position_valid, orientation_valid, pose);
+                ReleaseSRWLockExclusive(&smooth_lock);
+                applied = 1;
+            }
+
             if (!device_idle(d))
             {
-                inject(d, pose);
+                inject(d, orientation_valid, pose);
                 applied = 1;
             }
             break;
@@ -1652,6 +2428,88 @@ int xrdev_apply_offset(uint64_t space, xrdev_pose *pose)
 
     rd_end();
     return applied;
+}
+
+    /* ---------------------------------------------------- stick deadzones */
+
+/* One axis of one stick. A reading inside the deadzone becomes 0, which is
+ * what swallows the drift; a reading outside it is moved back over the rest
+ * of the travel, so the stick still reaches -1.0 and 1.0 and nothing jumps
+ * where the deadzone ends. When the deadzone is the whole travel there is no
+ * "rest of the travel" left to move into, so the axis simply reports 0 and the
+ * stick is ignored; that is how one axis of a broken stick is switched off
+ * while the other one goes on working. `zone` is the fraction of full travel,
+ * already clamped to 0..1. */
+static int deadzone_axis(double zone, float *value)
+{
+    float v = *value;
+    float mag = v < 0.0f ? -v : v;
+    float limit = (float)zone;
+    float out;
+
+    if (zone <= 0.0)
+        return 0;
+
+    if (zone >= 1.0)
+    {
+        if (v == 0.0f)
+            return 0;
+        *value = 0.0f;
+        return 1;
+    }
+
+    if (mag <= limit)
+    {
+        if (v == 0.0f)
+            return 0;
+        *value = 0.0f;
+        return 1;
+    }
+
+    out = (mag - limit) / (1.0f - limit);
+    if (out >= 1.0f)
+        return 0; /* the far end of the travel is already where it belongs */
+    *value = v < 0.0f ? -out : out;
+    return 1;
+}
+
+int xrdev_apply_deadzone(uint64_t subaction_path, float *x, float *y)
+{
+    const xrdev_device *d;
+    const char *path;
+    int index;
+
+    if (!x || !y)
+        return 0;
+
+    rd_begin();
+
+    /* The hooks are handed the number OpenXR stands for "/user/hand/left",
+     * known here because the game made it with xrStringToPath; every other
+     * hook in this file finds a device the same way. An unknown number is
+     * left completely alone rather than guessed at. */
+    path = path_lookup(subaction_path);
+    if (!path)
+    {
+        rd_end();
+        return 0;
+    }
+
+    index = device_lookup_by_path_nolock(path);
+    if (index < 0 || !state.devices[index].in_use || !state.devices[index].enabled)
+    {
+        rd_end();
+        return 0;
+    }
+    d = &state.devices[index];
+
+    /* One zone per axis, since a worn stick usually drifts along one of them. */
+    {
+        int hit = deadzone_axis(d->deadzone[XRDEV_STICK_X], x);
+        hit |= deadzone_axis(d->deadzone[XRDEV_STICK_Y], y);
+        rd_end();
+        return hit;
+    }
 }
 
     /* ------------------------------------------------- simulated sessions */

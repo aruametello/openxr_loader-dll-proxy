@@ -60,6 +60,7 @@
 #include <math.h>
 #include <ctype.h>
 #include <string.h>
+#include <inttypes.h> /* PRIu64, for the 64 bit XrPath values in the log */
 
 #include "main.h"
 #include "devices.h"
@@ -75,8 +76,6 @@
 #define degToRad(angleInDegrees) ((angleInDegrees) * M_PI / 180.0)
 #define radToDeg(angleInRadians) ((angleInRadians) * 180.0 / M_PI)
 
-#pragma pack(1)
-
 HINSTANCE hLThis = 0;
 HINSTANCE hL = 0;
 
@@ -86,8 +85,10 @@ PFN_xrVoidFunction *jump_table;
 char *jump_table_names;
 FILE *h_log = 0;
 
-char root_folder[256];      // workdir, OG dll and config file location.
-char config_file_path[256]; // fullpath of the config file
+// Filesystem paths are bounded by MAX_PATH, not by the 256 the old code used
+// to invent here and by the 160 that devices.h reserves for OpenXR paths.
+char root_folder[MAX_PATH];      // workdir, OG dll and config file location.
+char config_file_path[MAX_PATH]; // fullpath of the config file
 
 int log_message(const char *fmt, ...)
 {
@@ -171,7 +172,7 @@ void str_lowercase(char *str)
     (search path for configuration and OG dll)
 
 */
-int find_module_folder(char *search, char *output)
+int find_module_folder(char *search, char *output, size_t output_cap)
 {
   HMODULE hMods[1024];
   HANDLE hProcess;
@@ -220,8 +221,17 @@ int find_module_folder(char *search, char *output)
           // the name of the file is the one we are looking for?
           if (strcmp(&szModName[s + 1], search) == 0)
           {
-            // return the folder it is
-            strncpy(output, szModName, s + 1);
+            // return the folder it is, trailing slash included
+            if (((size_t)s + 2) > output_cap)
+            {
+              // GetModuleFileNameExA may hand back a path up to MAX_PATH,
+              // the caller's buffer may well be smaller. Say so, do not
+              // write past it.
+              log_message("folder of %s is %d characters, does not fit into %d, using the current directory instead.",
+                          search, s + 1, (int)output_cap);
+              break;
+            }
+            memcpy(output, szModName, (size_t)s + 1);
             output[s + 1] = 0;
             ret_value = 1;
           }
@@ -260,19 +270,44 @@ static int join_path_filename(char *out, size_t out_sz, const char *folder, cons
   return 1;
 }
 
-int log_init()
+/*
+    Starts the log file.
+
+    The log lives next to the proxy so it is easy to find. That folder is not
+    always writable though (a read only or protected install), so the
+    temporary folder is the fallback, and when nothing can be written the
+    proxy runs without a log.
+
+    There is no retry loop here on purpose: the old one re-seeded rand() with
+    time(NULL) inside the loop, so every attempt picked the very same name and
+    an unwritable folder turned DLL load into an endless spin - the game never
+    started and nothing was ever written to say why.
+*/
+int log_init(const char *folder)
 {
 #ifdef DEBUG
   return 1;
 #endif // DEBUG
 
-  do
-  {
-    char log_filename[256];
-    srand(time(NULL));
-    snprintf(log_filename, sizeof(log_filename), "log_%d.txt", rand());
+  char log_filename[MAX_PATH];
+  char temp_folder[MAX_PATH];
+  char name[64];
+
+  // one file per process, no random names involved
+  snprintf(name, sizeof(name), "openxr_loader_log_%lu.txt",
+           (unsigned long)GetCurrentProcessId());
+
+  if (folder && folder[0] &&
+      join_path_filename(log_filename, sizeof(log_filename), folder, name))
     h_log = fopen(log_filename, "a");
-  } while (h_log == 0);
+
+  if (!h_log &&
+      GetTempPathA(sizeof(temp_folder), temp_folder) > 0 &&
+      join_path_filename(log_filename, sizeof(log_filename), temp_folder, name))
+    h_log = fopen(log_filename, "a");
+
+  if (!h_log)
+    return 0; // silent is better than a game that never starts
 
   log_message("--- log start ---");
   return 1;
@@ -286,6 +321,46 @@ int log_close()
     h_log = 0;
   }
   return 1;
+}
+
+/*
+    The setup instructions for the one failure that is always the user's
+    fault to fix (the original loader was not renamed into place).
+
+    This used to be a MessageBox from DllMain. DllMain runs with the loader
+    lock held, so a modal dialog freezes every other thread of the game until
+    somebody clicks it - and a game with a startup watchdog kills the process
+    before anybody can. The text goes where it can be read at leisure.
+*/
+static void write_setup_error_file(const char *folder, const char *missing_path)
+{
+  char path[MAX_PATH];
+  FILE *arq;
+
+  if (!folder || !folder[0])
+    return;
+
+  if (!join_path_filename(path, sizeof(path), folder, "openxr_loader_proxy_ERROR.txt"))
+    return;
+
+  arq = fopen(path, "w");
+  if (!arq)
+    return;
+
+  fprintf(arq,
+          "OpenXR controler offset mod could not start.\n"
+          "\n"
+          "The original loader was not found where it has to be:\n"
+          "    %s\n"
+          "\n"
+          "read the instructions for further information.\n"
+          "(do not overwrite the original file! rename it!)\n"
+          "\n"
+          "The game will report that openxr_loader.dll failed to load.\n"
+          "That is this mod refusing to start, not a crash.\n",
+          missing_path ? missing_path : "(unknown)");
+
+  fclose(arq);
 }
 
 /*
@@ -316,26 +391,32 @@ int simple_hash(const char *string)
 */
 int assign_jump(const char *name, PFN_xrVoidFunction ptr)
 {
+  int position;
 
-  int position = simple_hash(name);
+  if (!jump_table || !jump_table_names)
+    return 0;
+
+  position = simple_hash(name);
 
   if (jump_table[position] != 0)
   {
-    char error[256];
-    snprintf(error, sizeof(error), "Hash colision! hash %d - %s",
-             position,
-             name);
-    printf("%s", error);
-
-    exit(666);
+    /*
+        This used to printf and exit(666). A colision is a bug in here, not
+        in the game, and killing the application over it is the worst
+        available answer: this function is called for every proxied name at
+        DLL load, so one unlucky new name would end every session of everyone
+        using this dll. Not proxying that one function is survivable.
+    */
+    log_message("Hash colision at %d for %s, it is not being proxied.",
+                position, name);
+    return 0;
   }
-  else
+
+  jump_table[position] = ptr;
   {
-    jump_table[position] = ptr;
     char *n = &jump_table_names[position * jump_table_name_size];
     strncpy(n, name, jump_table_name_size - 1);
     n[jump_table_name_size - 1] = 0;
-    // log_message("added %s to jumptable location %d",name,position);
   }
   return 1;
 }
@@ -437,28 +518,40 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
   {
     hLThis = hInst;
 
-    // start a logfile (before any attempt of log_message!)
-    log_init();
+    /*
+        Nothing in here may wait, show a dialog or call exit(): the loader
+        lock is held for the whole of DllMain, so every one of those stops
+        every other thread of the game that so much as starts up. Failures
+        refuse the load instead (the game then reports that openxr_loader.dll
+        failed to load, which is the truth) and the thread library calls are
+        not needed at all.
+    */
+    DisableThreadLibraryCalls(hInst);
 
     // try to find myself (openxr_loader.dll) within the loaded modules
     // of the current process, we need that to know what folder to look
     // for other stuff. (config file and OG dll)
-    if (!find_module_folder("openxr_loader.dll", root_folder))
+    // (this comes first now: the log file lives in that folder)
+    if (!find_module_folder("openxr_loader.dll", root_folder, sizeof(root_folder)))
     {
       root_folder[0] = 0; // not found? trying with the current directory anyway.
-      log_message("could not find my own dll!");
-    }
-    else
-    {
-      log_message("found my own dll at %s", root_folder);
     }
 
-    char ogdll_file_path[256];
-    if (!join_path_filename(config_file_path, sizeof(config_file_path), root_folder, "openxr_loader_config.txt") ||
+    // start a logfile (before any attempt of log_message!)
+    log_init(root_folder);
+
+    if (!root_folder[0])
+      log_message("could not find my own dll!");
+    else
+      log_message("found my own dll at %s", root_folder);
+
+    char ogdll_file_path[MAX_PATH];
+    if (!join_path_filename(config_file_path, sizeof(config_file_path), root_folder, "openxr_loader_config.json") ||
         !join_path_filename(ogdll_file_path, sizeof(ogdll_file_path), root_folder, "original_openxr_loader.dll"))
     {
       log_message("Path too long while building config/original loader filenames.");
-      exit(0);
+      log_close();
+      return 0;
     }
 
     // the device model owns the offsets and the interface reads them from
@@ -476,19 +569,32 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
     jump_table = calloc(jump_table_size, sizeof(*jump_table));
     jump_table_names = calloc(jump_table_size, jump_table_name_size);
 
+    if (!jump_table || !jump_table_names)
+    {
+      log_message("Could not allocate jump table memory.");
+      free(jump_table);
+      free(jump_table_names);
+      jump_table = 0;
+      jump_table_names = 0;
+      log_close();
+      return 0;
+    }
+
     hL = LoadLibrary(ogdll_file_path);
     if (!hL)
     {
-      char err[512];
-      snprintf(err, sizeof(err), "Could not find:\n%s\n\nread the instructions for further information.\n\n(do not overwrite the original file! rename it!)", ogdll_file_path);
-      MessageBoxA(0, err, "OpenXR controler offset mod", MB_ICONERROR);
+      log_message("Could not find:\n%s\nread the instructions for further information.\n(do not overwrite the original file! rename it!)",
+                  ogdll_file_path);
+      write_setup_error_file(root_folder, ogdll_file_path);
+      free(jump_table);
+      free(jump_table_names);
+      jump_table = 0;
+      jump_table_names = 0;
       log_close();
-      exit(0);
+      return 0;
     }
-    else
-    {
-      log_message("hook sucessful to original_openxr_loader.dll");
-    }
+
+    log_message("hook sucessful to original_openxr_loader.dll");
 
     /*
     //those functions arent exported, but exist, oddly xrGetInstanceProcAddr can tell their address.
@@ -560,12 +666,27 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
     _xrWaitFrame = (PFN_xrWaitFrame)GetProcAddress(hL, "xrWaitFrame");
     _xrWaitSwapchainImage = (PFN_xrWaitSwapchainImage)GetProcAddress(hL, "xrWaitSwapchainImage");
 
-    // do the jump table based on the dead simple hash names of the functions
-    if (!jump_table || !jump_table_names)
+    /*
+        Every proxy function below forwards straight into one of these, so a
+        NULL here is a call to address zero later on. The real loader exports
+        all of them; if this one does not, refusing the load beats crashing
+        the game inside xrLocateSpace a few seconds from now.
+    */
+    if (!_xrGetInstanceProcAddr || !_xrStringToPath || !_xrLocateSpace ||
+        !_xrCreateAction || !_xrCreateActionSet || !_xrCreateActionSpace ||
+        !_xrDestroySpace)
     {
-      log_message("Could not allocate jump table memory.");
-      exit(0);
+      log_message("The original loader at %s lacks functions this proxy needs, not starting.",
+                  ogdll_file_path);
+      free(jump_table);
+      free(jump_table_names);
+      jump_table = 0;
+      jump_table_names = 0;
+      log_close();
+      return 0;
     }
+
+    // do the jump table based on the dead simple hash names of the functions
 
     /*
         add the functions to the jump table (pointers to the proxy functions)
@@ -651,11 +772,21 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
   if (reason == DLL_PROCESS_DETACH)
   {
     log_message("--- DLL_PROCESS_DETACH, end of log ---");
+
+    /*
+        The interface is only asked to close, it is never waited for: a thread
+        cannot finish while the DllMain that waits for it holds the loader
+        lock. FreeLibrary of the original loader is not allowed from DllMain
+        either, and it is not needed - it is a dependency of this dll, the
+        loader unmaps it by itself.
+    */
     xrui_close();
+
     log_close();
     free(jump_table);
     free(jump_table_names);
-    FreeLibrary(hL);
+    jump_table = 0;
+    jump_table_names = 0;
   }
 
   return 1;
@@ -694,7 +825,12 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProcAddr(
     PFN_xrVoidFunction our_target = 0;
     if (search_jump(name, &our_target))
     {
-      log_message("i: %u - Rerouting %s to the proxy. (%p -> %p)", instance, name, function, our_target);
+      // what the original loader answered, before the override below
+      PFN_xrVoidFunction real_target = *function;
+
+      log_message("instance: %p - Rerouting %s to the proxy. (%p -> %p)",
+                  (const void *)instance, name,
+                  (const void *)real_target, (const void *)our_target);
 
       // we override the answer to the game engine
       *function = our_target;
@@ -727,7 +863,8 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProcAddr(
   }
   else
   {
-    log_message("i: %d - xrGetInstanceProcAddr: %s not found on the original dll? - %d", instance, name, ret);
+    log_message("instance: %p - xrGetInstanceProcAddr: %s not found on the original dll? - %d",
+                (const void *)instance, name, ret);
   }
 
   // whatever is the return value, always pass it forward!
@@ -817,13 +954,13 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateAction(
 
   if (ret == XR_SUCCESS)
   {
-    log_message("xrCreateAction parentActionset: %lu type: %d actiontype: %d actionname: %s localizedactionname: %s output: %lu",
-                actionSet,
+    log_message("xrCreateAction parentActionset: %p type: %d actiontype: %d actionname: %s localizedactionname: %s output: %p",
+                (const void *)actionSet,
                 createInfo->type,
                 createInfo->actionType,
                 createInfo->actionName,
                 createInfo->localizedActionName,
-                *action);
+                (const void *)*action);
 
     /*
         tell the device model which devices this action is bound to. it also
@@ -834,10 +971,12 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateAction(
     xrdev_note_action(handle_id(*action), createInfo->actionName,
                       createInfo->subactionPaths, (int)createInfo->countSubactionPaths);
 
-    for (int c = 0; c < createInfo->countSubactionPaths; c++)
+    for (uint32_t c = 0; c < createInfo->countSubactionPaths; c++)
     {
       const char *subpath = xrdev_path_string(createInfo->subactionPaths[c]);
-      log_message("Subpath: %u (%s)", createInfo->subactionPaths[c], subpath ? subpath : "unknown");
+      log_message("Subpath: %" PRIu64 " (%s)",
+                  createInfo->subactionPaths[c],
+                  subpath ? subpath : "unknown");
     }
   }
 
@@ -855,11 +994,11 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateActionSet(
 
   if (ret == XR_SUCCESS)
   {
-    log_message("xrCreateActionSet type: %d - %s - %s - output: %lu",
+    log_message("xrCreateActionSet type: %d - %s - %s - output: %p",
                 createInfo->type,
                 createInfo->actionSetName,
                 createInfo->localizedActionSetName,
-                *actionSet);
+                (const void *)*actionSet);
   }
   return ret;
 }
@@ -873,29 +1012,43 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateActionSpace(
 
   XrResult ret = _xrCreateActionSpace(session, createInfo, space);
 
-  log_message("xrCreateActionSpace action:%p subactionpath:%lu next:%p space:%p",
-              (const void *)createInfo->action,
-              (unsigned long)createInfo->subactionPath,
-              (const void *)createInfo->next,
-              (const void *)*space);
-
   /*
-      the device model decides which device owns this space: by the subaction
-      path, or by the action it was created for.
+      Only a space that was really created may be handed to the device model:
+      on failure *space was left exactly as the caller left it, and registering
+      that value would map offsets onto whatever handle the game had in that
+      variable.
   */
+  if (ret == XR_SUCCESS)
   {
-    int device = xrdev_note_action_space(handle_id(*space), createInfo->subactionPath,
-                                         handle_id(createInfo->action));
-    if (device >= 0)
+    log_message("xrCreateActionSpace action:%p subactionpath:%" PRIu64 " next:%p space:%p",
+                (const void *)createInfo->action,
+                createInfo->subactionPath,
+                (const void *)createInfo->next,
+                (const void *)*space);
+
+    /*
+        the device model decides which device owns this space: by the subaction
+        path, or by the action it was created for.
+    */
     {
-      xrdev_device owner;
-      if (xrdev_get(device, &owner))
-        log_message("NOTICE: ActionSpace %p belongs to %s (%s)",
-                    (const void *)*space, owner.name, owner.path);
+      int device = xrdev_note_action_space(handle_id(*space), createInfo->subactionPath,
+                                           handle_id(createInfo->action));
+      if (device >= 0)
+      {
+        xrdev_device owner;
+        if (xrdev_get(device, &owner))
+          log_message("NOTICE: ActionSpace %p belongs to %s (%s)",
+                      (const void *)*space, owner.name, owner.path);
+      }
+      else
+        log_message("NOTICE: ActionSpace %p is not assigned to any offset.", (const void *)*space);
     }
-    else
-      log_message("NOTICE: ActionSpace %p is not assigned to any offset.", (const void *)*space);
   }
+  else
+    log_message("xrCreateActionSpace action:%p subactionpath:%" PRIu64 " failed: %d",
+                (const void *)createInfo->action,
+                createInfo->subactionPath,
+                ret);
 
   return ret;
 }
@@ -1021,8 +1174,13 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEnumerateApiLayerProperties(
     uint32_t *propertyCountOutput,
     XrApiLayerProperties *properties)
 {
-  return _xrEnumerateApiLayerProperties(propertyCapacityInput, propertyCountOutput, properties);
-  log_message("xrEnumerateApiLayerProperties - count: %d", *propertyCountOutput);
+  XrResult ret = _xrEnumerateApiLayerProperties(propertyCapacityInput, propertyCountOutput, properties);
+
+  // the old log line sat after the return, so it never ran
+  log_message("xrEnumerateApiLayerProperties - count: %u",
+              propertyCountOutput ? (unsigned)*propertyCountOutput : 0u);
+
+  return ret;
 }
 
 // xrEnumerateBoundSourcesForAction
@@ -1068,8 +1226,9 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEnumerateInstanceExtensionProperties(
 
   // observing data before calling the real dll, this is useful to peek
   // and modify the "question" to openXR
+  // layerName is allowed to be NULL by the specification, %s is not
   log_message("xrEnumerateInstanceExtensionProperties name: %s Capacity: %u ptr: %p",
-              layerName,
+              layerName ? layerName : "(none)",
               propertyCapacityInput,
               properties);
 
@@ -1180,8 +1339,21 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetActionStateVector2f(
     const XrActionStateGetInfo *getInfo,
     XrActionStateVector2f *state)
 {
+  XrResult ret = _xrGetActionStateVector2f(session, getInfo, state);
+
   log_message("xrGetActionStateVector2f %d", rand() % 1000);
-  return _xrGetActionStateVector2f(session, getInfo, state);
+
+  /* The thumb stick, which is what this state type carries. Thumb sticks of
+     worn controllers (Meta Quest, Pico, and plenty of Index ones after a few
+     years) sit slightly off centre and the game reads that as a hand that
+     will not keep still; the deadzone of the hand this action was asked for
+     swallows it. Only a stick the runtime reports as live: an inactive state
+     holds nothing meaningful to filter. */
+  if (ret == XR_SUCCESS && state && getInfo && state->isActive)
+    xrdev_apply_deadzone((uint64_t)getInfo->subactionPath,
+                         &state->currentState.x, &state->currentState.y);
+
+  return ret;
 }
 // xrGetCurrentInteractionProfile
 XRAPI_ATTR XrResult XRAPI_CALL xrGetCurrentInteractionProfile(
@@ -1276,8 +1448,11 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
 
   XrResult ret = _xrLocateSpace(space, baseSpace, time, location);
 
-  // if its the type we want for rotation offsets
-  if (location->type == XR_TYPE_SPACE_LOCATION)
+  /* Only a pose the runtime actually delivered. When locate fails the
+     contents of location->pose are whatever the caller's memory happened to
+     hold, and rewriting that (with an offset rotated by a quaternion from
+     the same memory) invents a controller position out of nothing. */
+  if (ret == XR_SUCCESS && location->type == XR_TYPE_SPACE_LOCATION)
   {
 
     /*
@@ -1295,7 +1470,12 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateSpace(
       pose.orientation[2] = location->pose.orientation.z;
       pose.orientation[3] = location->pose.orientation.w;
 
-      if (xrdev_apply_offset(handle_id(space), &pose))
+      /* smoothing needs to know which pose stream this is (space + base
+         space + time) and whether the runtime really tracked the pose */
+      if (xrdev_apply_offset(handle_id(space), handle_id(baseSpace), (int64_t)time,
+                             (location->locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0,
+                             (location->locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0,
+                             &pose))
       {
         location->pose.position.x = (float)pose.position[0];
         location->pose.position.y = (float)pose.position[1];
@@ -1391,7 +1571,14 @@ XRAPI_ATTR XrResult XRAPI_CALL xrStringToPath(
 
   XrResult ret = _xrStringToPath(instance, pathString, path);
 
-  log_message("xrStringToPath pathString: %s answer: %lu",
+  if (ret != XR_SUCCESS || !path)
+  {
+    log_message("xrStringToPath pathString: %s failed: %d",
+                pathString ? pathString : "(null)", ret);
+    return ret;
+  }
+
+  log_message("xrStringToPath pathString: %s answer: %" PRIu64,
               pathString,
               *path);
 
@@ -1530,26 +1717,8 @@ print_viewconfig_view_info(uint32_t view_count, XrViewConfigurationView *viewcon
   }
 }
 
-/*
-    OpenXR internally has its quaternions in 32bit precision
-
-    to avoid losing precision during calculations, we internally
-    mess with them at 64bit precision, then downgrade back to 32bit.
-*/
-void quaternion_double_to_float(double input[4], double output[4])
-{
-  output[0] = input[0];
-  output[1] = input[1];
-  output[2] = input[2];
-  output[3] = input[3];
-}
-void quaternion_float_to_double(float input[4], double output[4])
-{
-  output[0] = input[0];
-  output[1] = input[1];
-  output[2] = input[2];
-  output[3] = input[3];
-}
+/* (The 64 bit intermediate precision OpenXR's 32 bit poses deserve lives in
+    xrdev_pose, which the hooks fill from floats and write back to floats.) */
 
 void print_euler(float e[3])
 {

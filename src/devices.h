@@ -48,6 +48,12 @@ extern "C"
 #define XRDEV_MAX_ACTIONS 128
 #define XRDEV_MAX_SOURCES 6
 #define XRDEV_PATH_MAX 160
+
+/* Config file paths are filesystem paths, and a Windows filesystem path can
+ * be MAX_PATH long. They must not share the size of XRDEV_PATH_MAX, which is
+ * sized for OpenXR action paths: a path truncated here is a file that gets
+ * written somewhere nobody ever reads. */
+#define XRDEV_PATH_FILE_MAX 260
 #define XRDEV_NAME_MAX 64
 #define XRDEV_LABEL_MAX 96
 
@@ -66,6 +72,21 @@ extern "C"
         XRDEV_AXIS_Z = 2,
         XRDEV_AXIS_COUNT = 3
     };
+
+    /* A thumb stick has two axes and a deadzone is set for each of them;
+     * these line up with the x and y of XrActionStateVector2f. */
+    enum
+    {
+        XRDEV_STICK_X = 0,
+        XRDEV_STICK_Y = 1,
+        XRDEV_STICK_AXIS_COUNT = 2
+    };
+
+    /* How the interface and the config file state a deadzone: percent of the
+     * stick's full travel. 0 means no deadzone at all; 100 means the axis is
+     * ignored, and reports 0 however far the stick is pushed. */
+#define XRDEV_DEADZONE_MIN_PERCENT 0.0
+#define XRDEV_DEADZONE_MAX_PERCENT 100.0
 
     typedef enum xrdev_kind
     {
@@ -87,6 +108,33 @@ extern "C"
         double fine;        /* small nudge, in the axis' own unit */
     } xrdev_axis_info;
 
+    /* The two things that can be smoothed, each with its own settings. */
+    enum
+    {
+        XRDEV_SMOOTH_POSITION = 0,
+        XRDEV_SMOOTH_ROTATION = 1,
+        XRDEV_SMOOTH_COUNT = 2
+    };
+
+#define XRDEV_SMOOTH_MIN_SAMPLES 1
+#define XRDEV_SMOOTH_MAX_SAMPLES 5
+
+    /* Distance-weighted smoothing: the newest sample always weighs 1.0, an
+     * older one weighs 1 / (1 + (d / scale)^2) where d is how far it is from
+     * the newest. Samples that are close together are averaged, a sample that
+     * is far away (a fast movement) hardly counts, so no latency is added when
+     * the hand moves quickly. Older samples also count less the older they
+     * are, and `strength` decides how far the result moves from the newest
+     * raw sample towards the weighted mean (0 = raw, 1 = all the way). */
+    typedef struct xrdev_smooth
+    {
+        int enabled;
+        int samples;    /* 1..5, counting the newest */
+        double strength; /* 0.0..1.0 */
+        double scale;   /* distance where an older sample weighs 0.5: metres
+                           for position, radians for rotation */
+    } xrdev_smooth;
+
     typedef struct xrdev_device
     {
         int in_use;             /* slot holds a device */
@@ -100,6 +148,15 @@ extern "C"
         int enabled;            /* offsets are injected when true */
         double rotation[XRDEV_AXIS_COUNT];  /* radians */
         double position[XRDEV_AXIS_COUNT];  /* metres */
+
+        /* Thumb stick deadzone per axis, as a fraction of full travel
+         * (0.0..0.80); the interface and the config file speak percent. It is
+         * there to swallow the drift worn controllers produce around centre. */
+        double deadzone[XRDEV_STICK_AXIS_COUNT];
+
+        /* Motion / rotation smoothing, one independent set each, see
+         * xrdev_smooth_*. Only ever used by the two hand devices. */
+        xrdev_smooth smooth[XRDEV_SMOOTH_COUNT];
 
         /* What the session told us about this device. */
         uint64_t spaces[XRDEV_MAX_SPACES];
@@ -171,6 +228,8 @@ typedef struct xrdev_pose
 
     XRDEV_API const xrdev_axis_info *xrdev_axis_rotation(int axis);
     XRDEV_API const xrdev_axis_info *xrdev_axis_position(int axis);
+    /* The thumb stick axes, in percent: what the interface shows and steps. */
+    XRDEV_API const xrdev_axis_info *xrdev_axis_deadzone(int axis);
 
     /* Degrees <-> radians, the config file and the UI speak degrees. */
     XRDEV_API double xrdev_deg2rad(double degrees);
@@ -183,12 +242,24 @@ typedef struct xrdev_pose
     XRDEV_API int xrdev_set_position(int index, int axis, double metres);
     XRDEV_API int xrdev_nudge_rotation(int index, int axis, double degrees);
     XRDEV_API int xrdev_nudge_position(int index, int axis, double metres);
+    /* Thumb stick deadzones, in percent of full travel (0..100); `axis` is
+     * XRDEV_STICK_X or XRDEV_STICK_Y. Setters clamp. */
+    XRDEV_API int xrdev_set_deadzone(int index, int axis, double percent);
+    XRDEV_API int xrdev_nudge_deadzone(int index, int axis, double percent);
     XRDEV_API int xrdev_set_enabled(int index, int enabled);
     XRDEV_API int xrdev_reset(int index);
     XRDEV_API int xrdev_reset_all(void);
     /* Copies src's offsets onto dst. Used by the "mirror to the other hand"
      * button: yaw is negated since the hands face each other. */
     XRDEV_API int xrdev_mirror(int src_index, int dst_index, int mirror_yaw);
+    /* Smoothing settings, `which` is XRDEV_SMOOTH_POSITION or _ROTATION.
+     * `scale` is in the unit the interface shows: metres or degrees. Setters
+     * clamp. Only the two hands accept them; they return 0 for other devices. */
+    XRDEV_API int xrdev_set_smooth_enabled(int index, int which, int enabled);
+    XRDEV_API int xrdev_set_smooth_samples(int index, int which, int samples);
+    XRDEV_API int xrdev_set_smooth_scale(int index, int which, double scale);
+    XRDEV_API int xrdev_set_smooth_strength(int index, int which, double strength);
+    XRDEV_API const xrdev_axis_info *xrdev_smooth_scale_info(int which);
     /* Renames the (usually auto-detected) display name of a device. */
     XRDEV_API int xrdev_set_name(int index, const char *name);
 
@@ -248,9 +319,39 @@ typedef struct xrdev_pose
 
     /* ------------------------------------------------------- injection */
 
-    /* Rewrites *pose with the offsets of the device that owns `space`.
-     * Returns 0 when the space belongs to no device or is disabled. */
-    XRDEV_API int xrdev_apply_offset(uint64_t space, xrdev_pose *pose);
+    /* Rewrites *pose with the smoothing and the offsets of the device that
+     * owns `space`. `base_space` and `time` (XrTime, nanoseconds) say which
+     * pose stream this sample belongs to; the *_valid flags say whether the
+     * runtime really tracked the position / orientation. Smoothing is applied
+     * before the offsets and never to anything but the two hands.
+     *
+     * An untracked orientation is not used to turn the position offset (it is
+     * added along the base space's own axes instead), so a stale or unnormalised
+     * quaternion cannot resize the offset the user dialled in. A space asked
+     * about against itself is left completely alone: the answer there is the
+     * identity pose, and an offset has no meaning against it.
+     *
+     * Returns 0 when nothing was changed: the space belongs to no device or is
+     * disabled, or it was located against itself. */
+    XRDEV_API int xrdev_apply_offset(uint64_t space, uint64_t base_space, int64_t time,
+                                     int position_valid, int orientation_valid,
+                                     xrdev_pose *pose);
+
+    /* Filters one thumb stick reading of the device that owns
+     * `subaction_path` (the number OpenXR handed out for /user/hand/left,
+     * see xrdev_note_path): *x and *y are rewritten in place.
+     *
+     * A value inside that axis' deadzone becomes 0, which is what removes the
+     * drift; a value outside it is pushed back over the rest of the travel,
+     * so the stick still reaches -1.0 and 1.0 and nothing jumps where the
+     * deadzone ends. A deadzone of the whole travel (100) leaves that axis at
+     * 0 whatever the stick does, which switches one axis off. The two axes are
+     * handled on their own, since a worn stick usually drifts along one of
+     * them.
+     *
+     * Returns 0 when nothing was changed: the device is unknown or disabled,
+     * or neither axis has a deadzone set. */
+    XRDEV_API int xrdev_apply_deadzone(uint64_t subaction_path, float *x, float *y);
 
 #ifdef __cplusplus
 }

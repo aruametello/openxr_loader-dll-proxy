@@ -22,7 +22,7 @@
         ui_debug.exe                       a made up session, to see the
                                            interface with devices in it
         ui_debug.exe --live                only what the config file holds
-        ui_debug.exe --config path.txt     read and write that file
+        ui_debug.exe --config path.json     read and write that file
         ui_debug.exe --shot out.png        save a PNG and quit
 */
 
@@ -33,7 +33,7 @@
 #include "ui.h"
 #include "devices.h"
 
-#define MOCK_CONFIG "ui_test_config.txt"
+#define MOCK_CONFIG "ui_test_config.json"
 
     static void log_to_console(const char *message)
 {
@@ -92,6 +92,8 @@ int main(int argc, char **argv)
             options.screenshot_frames = atoi(argv[++i]);
         else if (strcmp(argv[i], "--exit-after") == 0 && i + 1 < argc)
             options.exit_after_ms = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--tab") == 0 && i + 1 < argc)
+            options.tab = atoi(argv[++i]);
         else if (strcmp(argv[i], "--width") == 0 && i + 1 < argc)
             options.width = atoi(argv[++i]);
         else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc)

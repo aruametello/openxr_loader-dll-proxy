@@ -133,12 +133,21 @@ LAYER_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProcAddr(
 	}
 
 	if (strcmp(name, "xrLocateSpace") == 0) {
-		*function = (PFN_xrVoidFunction)demo_xrLocateSpace;
+		/* xrLocateSpace is an instance level command. With no instance yet
+		 * the loader is asking what would be used, and the answer is NULL
+		 * with XR_SUCCESS - handing out the wrapper here would give the
+		 * loader a function that forwards to a next-lookup which is still
+		 * NULL, which only becomes valid once xrCreateApiLayerInstance ran. */
+		*function = (instance == XR_NULL_HANDLE)
+			            ? NULL
+			            : (PFN_xrVoidFunction)demo_xrLocateSpace;
 		return XR_SUCCESS;
 	}
 
 	if (!g_next_get_instance_proc_addr) {
-		return XR_ERROR_INITIALIZATION_FAILED;
+		/* xrGetInstanceProcAddr has no initialisation failure to report: a
+		 * command this layer does not know is XR_ERROR_FUNCTION_UNSUPPORTED. */
+		return XR_ERROR_FUNCTION_UNSUPPORTED;
 	}
 
 	return g_next_get_instance_proc_addr(instance, name, function);

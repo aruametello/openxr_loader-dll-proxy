@@ -79,8 +79,17 @@ float Quaternion_toAxisAngle(Quaternion* q, float output[3])
 {
     assert(output != NULL);
     // Formula from http://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/
-    float angle = 2.0 * acos(q->w);
-    float divider = sqrt(1.0 - q->w * q->w);
+    // 32 bit round off routinely lands the scalar part a hair outside
+    // [-1, 1], where acos is undefined and quietly answers NaN, so it is
+    // clamped into the domain first.
+    float w = q->w;
+    if (w > 1.0f)
+        w = 1.0f;
+    else if (w < -1.0f)
+        w = -1.0f;
+
+    float angle = 2.0 * acos(w);
+    float divider = sqrt(1.0 - w * w);
 
     if(divider != 0.0) {
         // Calculate the axis

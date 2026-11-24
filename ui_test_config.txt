@@ -1,0 +1,57 @@
+#
+# configuration file for controller offsets in OpenXR
+#
+# One [device:...] section per device, named after its OpenXR
+# subaction path. Rotation is written in degrees, position in metres.
+#
+#   rotation_x = "up/down" angle
+#   rotation_y = "left/right" angle
+#   rotation_z = "twist" angle
+#
+# Hands only: smoothing of small movements, position and rotation apart.
+#   smooth_position / smooth_rotation = 0 or 1
+#   smooth_*_samples = 1 to 5 (the newest counts)
+#   smooth_*_strength = 0.0 (raw) to 1.0 (fully smoothed)
+#   smooth_position_scale in metres, smooth_rotation_scale in degrees:
+#   an older sample this far from the newest weighs half.
+#
+# Anything you add by hand survives as long as it is a comment.
+#
+
+[device:/user/hand/left]
+name=Left hand
+profile=/interaction_profiles/valve/index_controller
+enabled=1
+rotation_x=8.0000000
+rotation_y=8.0000000
+rotation_z=8.0000000
+position_x=0.2100000
+position_y=0.2100000
+position_z=0.2100000
+smooth_position=0
+smooth_position_samples=3
+smooth_position_scale=0.0050000
+smooth_position_strength=1.0000
+smooth_rotation_strength=1.0000
+smooth_rotation=0
+smooth_rotation_samples=3
+smooth_rotation_scale=1.0000000
+
+[device:/user/hand/right]
+name=Right hand
+profile=/interaction_profiles/valve/index_controller
+enabled=1
+rotation_x=8.0000000
+rotation_y=8.0000000
+rotation_z=8.0000000
+position_x=0.2100000
+position_y=0.2100000
+position_z=0.2100000
+smooth_position=0
+smooth_position_samples=3
+smooth_position_scale=0.0050000
+smooth_position_strength=1.0000
+smooth_rotation_strength=1.0000
+smooth_rotation=0
+smooth_rotation_samples=3
+smooth_rotation_scale=1.0000000

@@ -1,0 +1,60 @@
+{
+	"version":	2,
+	"devices":	[{
+			"path":	"/user/hand/left",
+			"name":	"Left hand",
+			"enabled":	true,
+			"rotation":	{
+				"x":	-0.5729578,
+				"y":	5.15662,
+				"z":	0
+			},
+			"position":	{
+				"x":	0,
+				"y":	0,
+				"z":	0
+			},
+			"smoothing":	{
+				"position":	{
+					"enabled":	false,
+					"samples":	3,
+					"strength":	1,
+					"scale":	0.005
+				},
+				"rotation":	{
+					"enabled":	false,
+					"samples":	3,
+					"strength":	1,
+					"scale":	1
+				}
+			}
+		}, {
+			"path":	"/user/hand/right",
+			"name":	"Right hand",
+			"enabled":	true,
+			"rotation":	{
+				"x":	-0.5729578,
+				"y":	-5.15662,
+				"z":	0
+			},
+			"position":	{
+				"x":	0,
+				"y":	0,
+				"z":	0
+			},
+			"smoothing":	{
+				"position":	{
+					"enabled":	false,
+					"samples":	3,
+					"strength":	1,
+					"scale":	0.005
+				},
+				"rotation":	{
+					"enabled":	false,
+					"samples":	3,
+					"strength":	1,
+					"scale":	1
+				}
+			}
+		}]
+}

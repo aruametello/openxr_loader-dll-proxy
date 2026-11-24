@@ -5,7 +5,7 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%.") do set "ROOT_DIR=%%~fI\"
 
 set "MANIFEST=%ROOT_DIR%openxr_api_layer_demo.json"
-set "LAYER_DLL=%ROOT_DIR%obj\LayerDemo\openxr_api_layer_demo.dll"
+set "LAYER_DLL=%ROOT_DIR%bin\LayerDemo\openxr_api_layer_demo.dll"
 set "REG_KEY=HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Explicit"
 set "LAYER_NAME=XR_APILAYER_OSSO_layer_demo"
 

@@ -22,7 +22,7 @@ extern "C"
 //void DLL_EXPORT SomeFunction(const LPCSTR sometext);
 
 
-extern char config_file_path[256];
+extern char config_file_path[MAX_PATH];
 
 //int log_message(const char *fmt, ...);
 
